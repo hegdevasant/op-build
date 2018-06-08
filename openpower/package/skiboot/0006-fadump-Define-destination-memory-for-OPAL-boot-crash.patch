@@ -1,0 +1,46 @@
+From 06075fcaa6be9f9e949cd93002044d372e107526 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:14:25 +0530
+Subject: [PATCH v3 06/18] fadump: Define destination memory for OPAL boot
+ crash
+
+We will hardcode OPAL dump source/destination memory region in SPIRAH
+so that we can capture early OPAL dump.
+
+OPAL stack size depends on PIR and OPAL calculates runtime size (including
+stack) during OPAL init. Hence use MAX possible PIR to calculate destination
+memory for OPAL dump.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ include/mem-map.h | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/include/mem-map.h b/include/mem-map.h
+index f15cffcf8..5c7839b5a 100644
+--- a/include/mem-map.h
++++ b/include/mem-map.h
+@@ -127,6 +127,20 @@
+  */
+ #define CPU_STACKS_BASE		(SKIBOOT_BASE + SKIBOOT_SIZE)
+ 
++/* Destination memory to capture OPAL dump. We use max possible PIR to
++ * calculate destination memory start address and size.
++ */
++#define FADUMP_DEST_CON_LOG		(CPU_STACKS_BASE + \
++					 ((SPR_PIR_P9_MASK + 1) * STACK_SIZE))
++#define FADUMP_DEST_CON_SIZE		(INMEM_CON_LEN)
++
++#define FADUMP_DEST_HBRT_LOG		(FADUMP_DEST_CON_LOG + FADUMP_DEST_CON_SIZE)
++#define FADUMP_DEST_HBRT_SIZE		(HBRT_CON_LEN)
++
++#define FADUMP_DEST_SKIBOOT_BASE	(FADUMP_DEST_HBRT_LOG + FADUMP_DEST_HBRT_SIZE)
++/* Collect OPAL core including max possible CPU stack data */
++#define FADUMP_DEST_SKIBOOT_SIZE	(FADUMP_DEST_CON_LOG - SKIBOOT_BASE)
++
+ /*
+  * Address at which we load the kernel LID. This is also where
+  * we expect a passed-in kernel if booting without FSP and
+-- 
+2.14.3
+

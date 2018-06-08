@@ -1,0 +1,72 @@
+From 311d2c022efa7d249de8003c1870b2ac0f901868 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:21:58 +0530
+Subject: [PATCH v3 08/18] hdata: Adjust various structure offset after
+ relocation
+
+ntuple addresses in SPIRAH are relative to payload base. Update various
+addresses after relocation so that hostboot can access new address to
+capture dump.
+
+Note that we update relocated SPIRAH. So if we crash before sending
+relocated skiboot base to SBE, hostboot can still collect early
+crash using original skiboot base.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ hdata/spira.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/hdata/spira.c b/hdata/spira.c
+index 12e7f2f61..5a6289e9a 100644
+--- a/hdata/spira.c
++++ b/hdata/spira.c
+@@ -25,6 +25,7 @@
+ #include <opal-dump.h>
+ #include <fsp-attn.h>
+ #include <fsp-leds.h>
++#include <skiboot.h>
+ 
+ #include "hdata.h"
+ #include "hostservices.h"
+@@ -1705,6 +1706,28 @@ static void fixup_spira(void)
+ 	spira.ntuples.node_stb_data = spiras->ntuples.node_stb_data;
+ }
+ 
++/*
++ * All the data structure addresses are relative to payload base. Hence adjust
++ * structures that are needed to capture OPAL dump during memory preserving IPL.
++ */
++static void update_spirah_addr(void)
++{
++#if !defined(TEST)
++	/* NACA starts at 0x4000 (see asm/head.S) */
++	uint64_t *spirah_offset = (uint64_t *)((u64)SKIBOOT_BASE + 0x4000);
++	/* Legacy SPIRA */
++	uint64_t *spira_offset = (uint64_t *)((u64)SKIBOOT_BASE + 0x4000 + 0x30);
++
++	if (proc_gen < proc_gen_p9)
++		return;
++
++	*spirah_offset = SPIRAH_OFF;
++	*spira_offset = SPIRA_OFF;
++	spirah.ntuples.hs_data_area.addr = CPU_TO_BE64(SPIRA_HEAP_BASE - SKIBOOT_BASE);
++	spirah.ntuples.mdump_res.addr = CPU_TO_BE64(MDRT_TABLE_BASE - SKIBOOT_BASE);
++#endif
++}
++
+ int parse_hdat(bool is_opal)
+ {
+ 	cpu_type = PVR_TYPE(mfspr(SPR_PVR));
+@@ -1713,6 +1736,8 @@ int parse_hdat(bool is_opal)
+ 
+ 	fixup_spira();
+ 
++	update_spirah_addr();
++
+ 	/*
+ 	 * Basic DT root stuff
+ 	 */
+-- 
+2.14.3
+

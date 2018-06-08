@@ -1,0 +1,125 @@
+From 26fb847aa312610000ea26b462e93ec92454c661 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 14:34:16 +0530
+Subject: [PATCH v3 01/18] FSP/MDST: Rename fsp-mdst-table.c -> fsp-sysdump.c
+
+OPAL is using MDST ntuple in SPIRAH to pass list of memory region (mostly OPAL
+console and host dmesg) to be collected as part of SYSDUMP. OPAL calls attn
+instruction in assert path. FSP detects attention and creates SYSDUMP.
+
+Soon we are going to support memory preserving IPL. Hence make below changes
+to reflect its usage:
+  - fsp-mdst-table.c -> fsp-sysdump.c
+  - fsp-mdst-table.h -> opal-dump.h (This will cater both SYSDUMP and memory
+				     preserving IPL).
+  - Rename structure name : dump_mdst_table -> mdst_table
+
+This patch does renaming and header file adjustment. No functionality changes.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ hdata/spira.c                              |  4 ++--
+ hw/fsp/Makefile.inc                        |  2 +-
+ hw/fsp/{fsp-mdst-table.c => fsp-sysdump.c} |  6 +++---
+ include/{fsp-mdst-table.h => opal-dump.h}  | 10 +++++-----
+ 4 files changed, 11 insertions(+), 11 deletions(-)
+ rename hw/fsp/{fsp-mdst-table.c => fsp-sysdump.c} (98%)
+ rename include/{fsp-mdst-table.h => opal-dump.h} (89%)
+
+diff --git a/hdata/spira.c b/hdata/spira.c
+index b3894672e..51d27386e 100644
+--- a/hdata/spira.c
++++ b/hdata/spira.c
+@@ -22,7 +22,7 @@
+ #include <interrupts.h>
+ #include <ccan/str/str.h>
+ #include <chip.h>
+-#include <fsp-mdst-table.h>
++#include <opal-dump.h>
+ #include <fsp-attn.h>
+ #include <fsp-leds.h>
+ 
+@@ -89,7 +89,7 @@ __section(".cpuctrl.data") struct cpu_ctl_init_data cpu_ctl_init_data = {
+  * addresses, we set the top bit to 1 on physical addresses
+  */
+ 
+-__section(".mdst.data") struct dump_mdst_table init_mdst_table[2] = {
++__section(".mdst.data") struct mdst_table init_mdst_table[2] = {
+ 	{
+ 		.addr = CPU_TO_BE64(INMEM_CON_START | HRMOR_BIT),
+ 		.type = CPU_TO_BE32(DUMP_REGION_CONSOLE),
+diff --git a/hw/fsp/Makefile.inc b/hw/fsp/Makefile.inc
+index 7a477db78..93239b7bb 100644
+--- a/hw/fsp/Makefile.inc
++++ b/hw/fsp/Makefile.inc
+@@ -4,7 +4,7 @@ FSP_OBJS  = fsp.o fsp-console.o fsp-rtc.o fsp-nvram.o fsp-sysparam.o
+ FSP_OBJS += fsp-surveillance.o fsp-codeupdate.o fsp-sensor.o
+ FSP_OBJS += fsp-diag.o fsp-leds.o fsp-mem-err.o fsp-op-panel.o
+ FSP_OBJS += fsp-elog-read.o fsp-elog-write.o fsp-epow.o fsp-dpo.o
+-FSP_OBJS += fsp-dump.o fsp-mdst-table.o fsp-chiptod.o fsp-ipmi.o
++FSP_OBJS += fsp-dump.o fsp-sysdump.o fsp-chiptod.o fsp-ipmi.o
+ FSP_OBJS += fsp-attn.o
+ FSP = hw/fsp/built-in.a
+ $(FSP): $(FSP_OBJS:%=hw/fsp/%)
+diff --git a/hw/fsp/fsp-mdst-table.c b/hw/fsp/fsp-sysdump.c
+similarity index 98%
+rename from hw/fsp/fsp-mdst-table.c
+rename to hw/fsp/fsp-sysdump.c
+index 0f145ba55..5f88733db 100644
+--- a/hw/fsp/fsp-mdst-table.c
++++ b/hw/fsp/fsp-sysdump.c
+@@ -32,7 +32,7 @@
+ #include <lock.h>
+ #include <skiboot.h>
+ #include <errorlog.h>
+-#include <fsp-mdst-table.h>
++#include <opal-dump.h>
+ 
+ /*
+  * Sapphire dump size
+@@ -60,8 +60,8 @@ DEFINE_LOG_ENTRY(OPAL_RC_DUMP_MDST_REMOVE, OPAL_PLATFORM_ERR_EVT, OPAL_DUMP,
+ 		 OPAL_PLATFORM_FIRMWARE, OPAL_INFO, OPAL_NA);
+ 
+ 
+-static struct dump_mdst_table *mdst_table;
+-static struct dump_mdst_table *dump_mem_region;
++static struct mdst_table *mdst_table;
++static struct mdst_table *dump_mem_region;
+ 
+ static int cur_mdst_entry;
+ static int max_mdst_entry;
+diff --git a/include/fsp-mdst-table.h b/include/opal-dump.h
+similarity index 89%
+rename from include/fsp-mdst-table.h
+rename to include/opal-dump.h
+index 5989cdb73..9ffffeeee 100644
+--- a/include/fsp-mdst-table.h
++++ b/include/opal-dump.h
+@@ -15,8 +15,8 @@
+  */
+ 
+ 
+-#ifndef __FSPMDST_H
+-#define __FSPMDST_H
++#ifndef __OPAL_DUMP_H
++#define __OPAL_DUMP_H
+ 
+ /*
+  * Dump region ids
+@@ -39,10 +39,10 @@
+  * Format of this table is same as Memory Dump Source Table (MDST)
+  * defined in HDAT spec.
+  */
+-struct dump_mdst_table {
++struct mdst_table {
+ 	__be64	addr;
+-	__be32	type; /* DUMP_SECTION_* */
++	__be32	type; /* DUMP_REGION_* */
+ 	__be32	size;
+ };
+ 
+-#endif	/* __FSPMDST_H */
++#endif	/* __OPAL_DUMP_H */
+-- 
+2.14.3
+

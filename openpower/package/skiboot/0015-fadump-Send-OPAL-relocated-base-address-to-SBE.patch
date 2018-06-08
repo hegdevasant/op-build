@@ -1,0 +1,106 @@
+From f28461c19f90bc483d0e3199e5dd1d64951415ff Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:22:47 +0530
+Subject: [PATCH v3 15/18] fadump: Send OPAL relocated base address to SBE
+
+OPAL relocates itself during boot. During memory preserving IPL hostboot needs
+to access relocated OPAL to get MDST, MDDT tables. Hence send relocated base
+address to SBE via 'stash MPIPL config' chip-op. During next IPL SBE will send
+stashed data to hostboot... so that hostboot can access these data.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ core/opal-mpipl.c |  4 ++++
+ hw/sbe-p9.c       | 31 +++++++++++++++++++++++++++++++
+ include/sbe-p9.h  |  6 ++++++
+ 3 files changed, 41 insertions(+)
+
+diff --git a/core/opal-mpipl.c b/core/opal-mpipl.c
+index 4eda1a7c5..b36f9bb1d 100644
+--- a/core/opal-mpipl.c
++++ b/core/opal-mpipl.c
+@@ -23,6 +23,7 @@
+ #include <opal.h>
+ #include <opal-dump.h>
+ #include <opal-internal.h>
++#include <sbe-p9.h>
+ #include <skiboot.h>
+ 
+ #include <ccan/endian/endian.h>
+@@ -348,6 +349,9 @@ void opal_fadump_init(void)
+ 
+ 	adjust_opal_dump_size(dump_node);
+ 
++	/* Send OPAL relocated base address to SBE */
++	p9_sbe_send_relocated_base(SKIBOOT_BASE);
++
+ 	/* OPAL interface */
+ 	opal_register(OPAL_FADUMP_MANAGE, opal_fadump_manage, 3);
+ }
+diff --git a/hw/sbe-p9.c b/hw/sbe-p9.c
+index d52ada15a..12d9e97ff 100644
+--- a/hw/sbe-p9.c
++++ b/hw/sbe-p9.c
+@@ -861,6 +861,37 @@ bool p9_sbe_timer_ok(void)
+ 	return sbe_has_timer;
+ }
+ 
++static void p9_sbe_stash_chipop_resp(struct p9_sbe_msg *msg)
++{
++	int rc = p9_sbe_get_primary_rc(msg->resp);
++
++	if (rc == SBE_STATUS_PRI_SUCCESS) {
++		prlog(PR_DEBUG, "Sent stash MPIPL config\n");
++	} else {
++		prlog(PR_DEBUG,
++		      "Failed to send stash MPIPL config [rc = 0x%x]\n", rc);
++	}
++
++	p9_sbe_freemsg(msg);
++}
++
++void p9_sbe_send_relocated_base(uint64_t val)
++{
++	u8 key = SBE_STASH_KEY_SKIBOOT_BASE;
++	u16 cmd = SBE_CMD_STASH_MPIPL_CONFIG;
++	u16 flag = SBE_CMD_CTRL_RESP_REQ;
++	struct p9_sbe_msg *msg;
++
++	msg = p9_sbe_mkmsg(cmd, flag, key, val, 0);
++	if (!msg) {
++		prlog(PR_DEBUG, "Message allocation failed\n");
++		return;
++	}
++	if (p9_sbe_queue_msg(sbe_default_chip_id, msg, p9_sbe_stash_chipop_resp)) {
++		prlog(PR_ERR, "Failed to queue stash MPIPL config message\n");
++	}
++}
++
+ void p9_sbe_init(void)
+ {
+ 	struct dt_node *xn;
+diff --git a/include/sbe-p9.h b/include/sbe-p9.h
+index 4b839d8ba..7101dc700 100644
+--- a/include/sbe-p9.h
++++ b/include/sbe-p9.h
+@@ -159,6 +159,9 @@
+ #define CONTROL_TIMER_START		0x0001
+ #define CONTROL_TIMER_STOP		0x0002
+ 
++/* Stash MPIPL config */
++#define SBE_STASH_KEY_SKIBOOT_BASE	0x03
++
+ /* SBE message state */
+ enum p9_sbe_msg_state {
+ 	sbe_msg_unused = 0,	/* Free */
+@@ -237,4 +240,7 @@ extern bool p9_sbe_timer_ok(void);
+ /* Update SBE timer expiry */
+ extern void p9_sbe_update_timer_expiry(uint64_t new_target);
+ 
++/* Send skiboot relocated base address to SBE */
++extern void p9_sbe_send_relocated_base(uint64_t val);
++
+ #endif	/* __SBE_P9_H */
+-- 
+2.14.3
+

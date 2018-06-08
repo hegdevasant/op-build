@@ -1,0 +1,41 @@
+From c9b4d7abb06fb3266033086dc08aa2243f255e02 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:12:50 +0530
+Subject: [PATCH v3 05/18] hdata: Setup memory for MDRT table
+
+Hostboot fills MDRT table after moving memory content from source to destination
+memory. And OPAL relies on this table to extract the dump. We have to make sure
+this table is intact. Hence define memory relative to SKIBOOT_BASE so that our
+relocation doesn't overwrite this memory.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ include/mem-map.h | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/include/mem-map.h b/include/mem-map.h
+index 98f781cc5..f15cffcf8 100644
+--- a/include/mem-map.h
++++ b/include/mem-map.h
+@@ -103,11 +103,17 @@
+ #define PSI_TCE_TABLE_SIZE_P7	0x00020000UL
+ #define PSI_TCE_TABLE_SIZE_P8	0x00200000UL
+ 
++/* This is our dump result table after MPIPL. Hostboot will write to this
++ * memory after moving memory content from source to destination memory.
++ */
++#define MDRT_TABLE_BASE		(SKIBOOT_BASE + 0x01c00000)
++#define MDRT_TABLE_SIZE		0x00010000
++
+ /* Total size of the above area
+  *
+  * (Ensure this has at least a 64k alignment)
+  */
+-#define SKIBOOT_SIZE		0x01c00000
++#define SKIBOOT_SIZE		0x01c10000
+ 
+ /* We start laying out the CPU stacks from here, indexed by PIR
+  * each stack is STACK_SIZE in size (naturally aligned power of
+-- 
+2.14.3
+

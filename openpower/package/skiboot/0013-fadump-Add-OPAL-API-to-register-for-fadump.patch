@@ -1,0 +1,261 @@
+From 1ad1e74e12f71ec694ee143387988656b7ea8c03 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:22:36 +0530
+Subject: [PATCH v3 13/18] fadump: Add OPAL API to register for fadump
+
+This patch adds new API for fadump.
+  int64_t opal_fadump_manage(uint64_t cmd, void *data, uint64_t dsize)
+
+  cmd : 0x01 -> Register for fadump
+        0x02 -> Unregister fadump
+	0x03 -> Invalidate existing dump
+
+  data : For cmd = 0x01, data contains payload section reservation details
+         (uses fadump structure format to send data).
+         For other cmd values, data will be NULL.
+  dsize: Size of data
+
+Return values:
+  OPAL_SUCCESS   : Operation success
+  OPAL_PARAMETER : Payload passed invalid data
+  OPAL_RESOURCE  : Ran out of MDST, MDDT table size
+  OPAL_PERMISSION: Already registered
+  OPAL_HARDWARE  : Fadump not supported
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ core/opal-mpipl.c  | 181 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ include/opal-api.h |  13 +++-
+ 2 files changed, 193 insertions(+), 1 deletion(-)
+
+diff --git a/core/opal-mpipl.c b/core/opal-mpipl.c
+index 9e95cdbae..4eda1a7c5 100644
+--- a/core/opal-mpipl.c
++++ b/core/opal-mpipl.c
+@@ -37,6 +37,184 @@ static struct spira_ntuple *ntuple_mdst;
+ static struct spira_ntuple *ntuple_mddt;
+ static struct spira_ntuple *ntuple_mdrt;
+ 
++/* Clear MDRT memory */
++static inline void opal_fadump_invalidate(void)
++{
++	struct mdrt_table *mdrt = (void *)(MDRT_TABLE_BASE);
++
++	memset(mdrt, 0, MDRT_TABLE_SIZE);
++	/* Reset MDRT count */
++	ntuple_mdrt->act_cnt =
++		cpu_to_be16(MDRT_TABLE_SIZE / sizeof(struct mdrt_table));
++}
++
++static void opal_fadump_unregister(void)
++{
++	int i, j;
++	struct mdst_table *mdst, *tmp_mdst;
++	struct mddt_table *mddt, *tmp_mddt;
++
++	mdst = (void *)(MDST_TABLE_BASE);
++	for (i = 0; i < ntuple_mdst->act_cnt; ) {
++		if (mdst->dump_type != DUMP_TYPE_FADUMP ||
++		    mdst->data_region < FADUMP_REGION_HOST_START) {
++			mdst++;
++			i++;
++			continue;
++		}
++
++		tmp_mdst = mdst;
++		memset(tmp_mdst, 0, sizeof(struct mdst_table));
++		for (j = i; j < ntuple_mdst->act_cnt - 1; j++) {
++			memcpy((void *)tmp_mdst,
++			       (void *)(tmp_mdst + 1), sizeof(struct mdst_table));
++			tmp_mdst++;
++			memset(tmp_mdst, 0, sizeof(struct mdst_table));
++		}
++		ntuple_mdst->act_cnt--;
++	}
++
++	mddt = (void *)(MDDT_TABLE_BASE);
++	for (i = 0; i < ntuple_mddt->act_cnt; ) {
++		if (mddt->data_region < FADUMP_REGION_HOST_START) {
++			mddt++;
++			i++;
++			continue;
++		}
++
++		tmp_mddt = mddt;
++		memset(tmp_mddt, 0, sizeof(struct mddt_table));
++		for (j = i; j < ntuple_mddt->act_cnt - 1; j++) {
++			memcpy((void *)tmp_mddt,
++			       (void *)(tmp_mddt + 1), sizeof(struct mddt_table));
++			tmp_mddt++;
++			memset(tmp_mddt, 0, sizeof(struct mddt_table));
++		}
++		ntuple_mddt->act_cnt--;
++	}
++}
++
++static int opal_fadump_register(void *data, uint64_t dsize)
++{
++	int i, sec_cnt, max_mdst_entry, max_mddt_entry;
++	struct fadump_section *section;
++	struct fadump *fadump = (void *)data;
++	struct mdst_table *mdst = (void *)(MDST_TABLE_BASE);
++	struct mddt_table *mddt = (void *)(MDDT_TABLE_BASE);
++
++	if (dsize < sizeof(struct fadump)) {
++		prlog(PR_DEBUG, "data size is less than minimum size "
++		      "[dsize = 0x%llx]\n", dsize);
++		return OPAL_PARAMETER;
++	}
++
++	sec_cnt = be16_to_cpu(fadump->section_count);
++	if (sec_cnt <= 0) {
++		prlog(PR_DEBUG, "Invalid section count = 0x%x\n", sec_cnt);
++		return OPAL_PARAMETER;
++	}
++
++	max_mdst_entry = MDST_TABLE_SIZE / sizeof(struct mdst_table);
++	if (ntuple_mdst->act_cnt >= (max_mdst_entry + sec_cnt)) {
++		prlog(PR_DEBUG, "MDST table is full\n");
++		return OPAL_RESOURCE;
++	}
++
++	max_mddt_entry = MDDT_TABLE_SIZE / sizeof(struct mddt_table);
++	if (ntuple_mddt->act_cnt >= (max_mddt_entry + sec_cnt)) {
++		prlog(PR_DEBUG, "MDDT table is full\n");
++		return OPAL_RESOURCE;
++	}
++
++	/* Already registered ? */
++	for (i = 0; i < ntuple_mdst->act_cnt; i++) {
++		if (mdst->dump_type == DUMP_TYPE_FADUMP &&
++		    mdst->data_region >= FADUMP_REGION_HOST_START) {
++			prlog(PR_DEBUG, "Already registered\n");
++			return OPAL_PERMISSION;
++		}
++
++		mdst++;
++	}
++
++	mdst = (struct mdst_table *)(MDST_TABLE_BASE +
++				     ntuple_mdst->act_cnt * sizeof(struct mdst_table));
++	mddt = (struct mddt_table *)(MDDT_TABLE_BASE +
++				     ntuple_mddt->act_cnt * sizeof(struct mddt_table));
++	for (i = 0; i < sec_cnt; i++) {
++		section = &(fadump->section[i]);
++
++		if (section->source_type < FADUMP_REGION_HOST_START) {
++			prlog(PR_DEBUG, "Invalid source type : 0x%x\n",
++			      section->source_type);
++			goto clr_entry;
++		}
++
++		if (!opal_addr_valid((void *)section->source_addr)) {
++			prlog(PR_DEBUG, "Invalid source address "
++			      "[addr = 0x%llx]\n", section->source_addr);
++			goto clr_entry;
++		}
++
++		mdst->dump_type = DUMP_TYPE_FADUMP;
++		mdst->data_region = section->source_type;
++		mdst->addr = section->source_addr | HRMOR_BIT;
++		mdst->size = section->source_size;
++		mdst++;
++		ntuple_mdst->act_cnt++;
++
++		if (!opal_addr_valid((void *)section->dest_addr)) {
++			prlog(PR_DEBUG, "Invalid destination address "
++			      "[addr = 0x%llx]\n", section->dest_addr);
++			goto clr_entry;
++		}
++
++		mddt->data_region = section->source_type;
++		mddt->addr = section->dest_addr | HRMOR_BIT;
++		mddt->size = section->dest_size;
++		mddt++;
++		ntuple_mddt->act_cnt++;
++
++		prlog(PR_NOTICE, "Registered new entry : src - 0x%llx, "
++		      "dst - 0x%llx, size - 0x%x\n",
++		      mdst->addr, mddt->addr, mdst->size);
++	}
++
++	return OPAL_SUCCESS;
++
++clr_entry:
++	opal_fadump_unregister();
++	return OPAL_PARAMETER;
++}
++
++static int64_t opal_fadump_manage(uint64_t cmd, void *data, uint64_t dsize)
++{
++	int rc = OPAL_SUCCESS;
++
++	prlog(PR_TRACE, "opal_fadump_manage : cmd - 0x%llx\n", cmd);
++
++	switch (cmd) {
++	case OPAL_FADUMP_REGISTER:
++		rc = opal_fadump_register(data, dsize);
++		if (rc == OPAL_SUCCESS)
++			prlog(PR_NOTICE, "Payload registered for MPIPL\n");
++		break;
++	case OPAL_FADUMP_UNREGISTER:
++		opal_fadump_unregister();
++		prlog(PR_NOTICE, "Payload unregistered for MPIPL\n");
++		break;
++	case OPAL_FADUMP_INVALIDATE:
++		opal_fadump_invalidate();
++		prlog(PR_NOTICE, "Payload invalidated MPIPL\n");
++		break;
++	default:
++		prlog(PR_DEBUG, "Unsupported command : 0x%llx\n", cmd);
++		rc = OPAL_PARAMETER;
++		break;
++	}
++
++	return rc;
++}
+ 
+ /* Reserve OPAL dump destination memory */
+ static void add_fadump_reserve_node(struct dt_node *dump_node)
+@@ -169,4 +347,7 @@ void opal_fadump_init(void)
+ 	ntuple_mdrt = &(spirah.ntuples.mdump_res);
+ 
+ 	adjust_opal_dump_size(dump_node);
++
++	/* OPAL interface */
++	opal_register(OPAL_FADUMP_MANAGE, opal_fadump_manage, 3);
+ }
+diff --git a/include/opal-api.h b/include/opal-api.h
+index e30963909..58c826e34 100644
+--- a/include/opal-api.h
++++ b/include/opal-api.h
+@@ -223,7 +223,8 @@
+ #define OPAL_PCI_GET_PBCQ_TUNNEL_BAR		164
+ #define OPAL_PCI_SET_PBCQ_TUNNEL_BAR		165
+ #define OPAL_HANDLE_HMI2			166
+-#define OPAL_LAST				166
++#define OPAL_FADUMP_MANAGE			167
++#define OPAL_LAST				167
+ 
+ #define QUIESCE_HOLD			1 /* Spin all calls at entry */
+ #define QUIESCE_REJECT			2 /* Fail all calls with OPAL_BUSY */
+@@ -1341,6 +1342,16 @@ struct fadump {
+ 	struct	fadump_section section[];
+ };
+ 
++/*
++ * Command option argument for fadump manage API (OPAL_FADUMP_MANAGE)
++ *  - for registration payload should pass memory reservation details
++ *  - Unregister option removes all entries from payload
++ *  - Invalidate option invalidatates existing fadump
++ * */
++#define OPAL_FADUMP_REGISTER	0x01
++#define OPAL_FADUMP_UNREGISTER	0x02
++#define OPAL_FADUMP_INVALIDATE	0x03
++
+ #endif /* __ASSEMBLY__ */
+ 
+ #endif /* __OPAL_API_H */
+-- 
+2.14.3
+

@@ -1,0 +1,80 @@
+From a61d1a380b2af393a128b6461fa0e591e4c2e2a7 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:22:13 +0530
+Subject: [PATCH v3 10/18] hdata: Create ibm,dump DT node
+
+We use MPIPL system parameter to detect whether MPIPL is supported or not.
+If its supported create new device tree node (/ibm,dump) to pass all dump
+related information to kernel. This patch creates new node and populates
+below properties:
+  - compatible   - ibm,dump version
+  - fw-load-area - Memory used by OPAL to load kernel/initrd from PNOR
+                   (KERNEL_LOAD_BASE & INITRAMFS_LOAD_BASE)
+                   This is the temporary memory used by OPAL during boot.
+		   Later Linux kernel is free to use this memory. We will
+		   pass this information to Linux. If Linux kernel is using
+		   these memory it will take necessary steps to make sure
+		   OPAL stomping these memory doesn't impact vmcore.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ hdata/spira.c | 23 +++++++++++++++++++++++
+ hdata/spira.h |  1 +
+ 2 files changed, 24 insertions(+)
+
+diff --git a/hdata/spira.c b/hdata/spira.c
+index 5a6289e9a..cc9633186 100644
+--- a/hdata/spira.c
++++ b/hdata/spira.c
+@@ -1028,6 +1028,25 @@ static void dt_init_secureboot_node(const struct iplparams_sysparams *sysparams)
+ 	dt_add_property_cells(node, "hw-key-hash-size", hw_key_hash_size);
+ }
+ 
++static void fadump_add_node(void)
++{
++	u64 fw_load_area[4];
++	struct dt_node *node;
++
++	if (proc_gen < proc_gen_p9)
++		return;
++
++	node = dt_new(dt_root, "ibm,dump");
++	assert(node);
++	dt_add_property_string(node, "compatible", "ibm,opal-dump-v1");
++
++	fw_load_area[0] = (u64)KERNEL_LOAD_BASE;
++	fw_load_area[1] = KERNEL_LOAD_SIZE;
++	fw_load_area[2] = (u64)INITRAMFS_LOAD_BASE;
++	fw_load_area[3] = INITRAMFS_LOAD_SIZE;
++	dt_add_property(node, "fw-load-area", fw_load_area, sizeof(fw_load_area));
++}
++
+ static void add_iplparams_sys_params(const void *iplp, struct dt_node *node)
+ {
+ 	const struct iplparams_sysparams *p;
+@@ -1115,6 +1134,10 @@ static void add_iplparams_sys_params(const void *iplp, struct dt_node *node)
+ 	if (sys_attributes & SYS_ATTR_RISK_LEVEL)
+ 		dt_add_property(node, "elevated-risk-level", NULL, 0);
+ 
++	/* Populate fadump node */
++	if (sys_attributes & SYS_ATTR_MPIPL_SUPPORTED)
++		fadump_add_node();
++
+ 	if (version >= 0x60 && proc_gen >= proc_gen_p9)
+ 		dt_init_secureboot_node(p);
+ }
+diff --git a/hdata/spira.h b/hdata/spira.h
+index ef2aec257..398c1151a 100644
+--- a/hdata/spira.h
++++ b/hdata/spira.h
+@@ -363,6 +363,7 @@ struct iplparams_sysparams {
+ 	__be32		sys_eco_mode;
+ #define SYS_ATTR_MULTIPLE_TPM PPC_BIT32(0)
+ #define SYS_ATTR_RISK_LEVEL PPC_BIT32(3)
++#define SYS_ATTR_MPIPL_SUPPORTED PPC_BIT32(4)
+ 	__be32		sys_attributes;
+ 	__be32		mem_scrubbing;
+ 	__be16		cur_spl_value;
+-- 
+2.14.3
+

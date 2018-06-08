@@ -1,0 +1,133 @@
+From 418cf3c0e96dbd0b3a17bd0996d5ab852e51af7e Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Mon, 4 Jun 2018 20:16:34 +0530
+Subject: [PATCH v3 18/18] mbox: Reset bmc mbox in MPIPL path
+
+During boot SBE and early hostboot does not use MBOX protocol to get image
+from PNOR. Instead it expects PNOR TOC and Hostboot Boot Boot Loader to be
+availabe at particular address in LPC bus. mbox daemon in BMC side takes care
+of this during normal boot. Once boot is complete mbox daemon swiches to
+normal mode.
+
+During normal reboot, BMC side mbox daemon gets notification and takes care of
+loading PNOR TOC and HBBL to LPC bus again.
+
+In MPIPL path, OPAL call SBE S0/S1 interrupt to initiate MPIPL. BMC will not be
+aware of this. But SBE expects PNOR TOC and HBBL to be available in LPC bus at
+predefined address. Hence call MBOX Reset from OPAL in assert path.
+
+Note that this is workaround to get mbox working for now. Long term solution is
+to use a bit in the Host Status byte of the mbox protocol's memory layout to
+indicate to mboxd that the host is preparing for reboot. We will implement once
+BMC side implementation is complete.
+
+CC: Andrew Jeffery <andrew@aj.id.au>
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ core/flash.c          |  8 ++++++++
+ hw/sbe-p9.c           |  3 +++
+ include/skiboot.h     |  1 +
+ libflash/blocklevel.h |  1 +
+ libflash/mbox-flash.c | 22 ++++++++++++++++++++++
+ 5 files changed, 35 insertions(+)
+
+diff --git a/core/flash.c b/core/flash.c
+index e3be57613..474f36f0f 100644
+--- a/core/flash.c
++++ b/core/flash.c
+@@ -76,6 +76,14 @@ void flash_release(void)
+ 	unlock(&flash_lock);
+ }
+ 
++void flash_reset(void)
++{
++	struct blocklevel_device *bl = system_flash->bl;
++
++	if (dt_find_compatible_node(dt_root, NULL, "mbox"))
++		bl->reset(bl);
++}
++
+ static int flash_nvram_info(uint32_t *total_size)
+ {
+ 	int rc;
+diff --git a/hw/sbe-p9.c b/hw/sbe-p9.c
+index 627ef428a..c6df40fa2 100644
+--- a/hw/sbe-p9.c
++++ b/hw/sbe-p9.c
+@@ -941,6 +941,9 @@ void __attribute__((noreturn)) p9_sbe_terminate(const char *msg)
+ 	int rc, waited = 0;
+ 	struct dt_node *xn;
+ 
++	/* Reset BMC MBOX driver */
++	flash_reset();
++
+ 	dt_for_each_compatible(dt_root, xn, "ibm,xscom") {
+ 		chip_id = dt_get_chip_id(xn);
+ 
+diff --git a/include/skiboot.h b/include/skiboot.h
+index b4bdf3779..badbd9ebf 100644
+--- a/include/skiboot.h
++++ b/include/skiboot.h
+@@ -255,6 +255,7 @@ extern int flash_start_preload_resource(enum resource_id id, uint32_t subid,
+ extern int flash_resource_loaded(enum resource_id id, uint32_t idx);
+ extern bool flash_reserve(void);
+ extern void flash_release(void);
++extern void flash_reset(void);
+ #define FLASH_SUBPART_ALIGNMENT 0x1000
+ #define FLASH_SUBPART_HEADER_SIZE FLASH_SUBPART_ALIGNMENT
+ extern int flash_subpart_info(void *part_header, uint32_t header_len,
+diff --git a/libflash/blocklevel.h b/libflash/blocklevel.h
+index ba42c83d0..e11dbfbfb 100644
+--- a/libflash/blocklevel.h
++++ b/libflash/blocklevel.h
+@@ -47,6 +47,7 @@ struct blocklevel_device {
+ 	int (*erase)(struct blocklevel_device *bl, uint64_t pos, uint64_t len);
+ 	int (*get_info)(struct blocklevel_device *bl, const char **name, uint64_t *total_size,
+ 			uint32_t *erase_granule);
++	int (*reset)(struct blocklevel_device *bl);
+ 
+ 	/*
+ 	 * Keep the erase mask so that blocklevel_erase() can do sanity checking
+diff --git a/libflash/mbox-flash.c b/libflash/mbox-flash.c
+index 6742d215c..dd5ac2f88 100644
+--- a/libflash/mbox-flash.c
++++ b/libflash/mbox-flash.c
+@@ -818,6 +818,27 @@ static int mbox_flash_read(struct blocklevel_device *bl, uint64_t pos,
+ 	return rc;
+ }
+ 
++static int mbox_flash_reset(struct blocklevel_device *bl)
++{
++	int rc;
++	struct mbox_flash_data *mbox_flash;
++	struct bmc_mbox_msg msg = MSG_CREATE(MBOX_C_RESET_STATE);
++
++	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
++
++	rc = msg_send(mbox_flash, &msg, mbox_flash->timeout);
++	if (rc) {
++		prlog(PR_ERR, "Failed to enqueue/send BMC MBOX RESET msg\n");
++		return rc;
++	}
++	if (wait_for_bmc(mbox_flash, mbox_flash->timeout)) {
++		prlog(PR_ERR, "Error waiting for BMC\n");
++		return rc;
++	}
++
++	return OPAL_SUCCESS;
++}
++
+ static int mbox_flash_get_info(struct blocklevel_device *bl, const char **name,
+ 		uint64_t *total_size, uint32_t *erase_granule)
+ {
+@@ -1147,6 +1168,7 @@ int mbox_flash_init(struct blocklevel_device **bl)
+ 	mbox_flash->bl.write = &mbox_flash_write;
+ 	mbox_flash->bl.erase = &mbox_flash_erase_v2;
+ 	mbox_flash->bl.get_info = &mbox_flash_get_info;
++	mbox_flash->bl.reset = &mbox_flash_reset;
+ 
+ 	if (bmc_mbox_get_attn_reg() & MBOX_ATTN_BMC_REBOOT)
+ 		rc = handle_reboot(mbox_flash);
+-- 
+2.14.3
+

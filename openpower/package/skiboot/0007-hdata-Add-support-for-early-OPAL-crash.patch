@@ -1,0 +1,123 @@
+From 7fcfab9fcdb9da3160525dca1c08fd8a75754fca Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:17:30 +0530
+Subject: [PATCH v3 07/18] hdata: Add support for early OPAL crash
+
+Lets hardcode few entries in MDST and MDDT table.. so that we can capture
+early OPAL crash. Note that we will have 1 to 1 mapping between MDST and
+MDDT table entry.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ hdata/spira.c            | 54 ++++++++++++++++++++++++++++++++++++++++++++----
+ hdata/test/hdata_to_dt.c |  1 +
+ include/opal-dump.h      |  1 +
+ 3 files changed, 52 insertions(+), 4 deletions(-)
+
+diff --git a/hdata/spira.c b/hdata/spira.c
+index 9f908edd3..12e7f2f61 100644
+--- a/hdata/spira.c
++++ b/hdata/spira.c
+@@ -89,7 +89,7 @@ __section(".cpuctrl.data") struct cpu_ctl_init_data cpu_ctl_init_data = {
+  * addresses, we set the top bit to 1 on physical addresses
+  */
+ 
+-__section(".mdst.data") struct mdst_table init_mdst_table[2] = {
++__section(".mdst.data") struct mdst_table init_mdst_table[3] = {
+ 	{
+ 		.addr = CPU_TO_BE64(INMEM_CON_START | HRMOR_BIT),
+ 		.data_region = DUMP_REGION_CONSOLE,
+@@ -102,6 +102,30 @@ __section(".mdst.data") struct mdst_table init_mdst_table[2] = {
+ 		.dump_type = DUMP_TYPE_SYSDUMP,
+ 		.size = CPU_TO_BE32(HBRT_CON_LEN),
+ 	},
++	{
++		.addr = CPU_TO_BE64(SKIBOOT_BASE | HRMOR_BIT),
++		.data_region = DUMP_REGION_OPAL_MEMORY,
++		.dump_type = DUMP_TYPE_FADUMP,
++		.size = CPU_TO_BE32(FADUMP_DEST_SKIBOOT_SIZE),
++	},
++};
++
++__section(".mddt.data") struct mddt_table init_mddt_table[3] = {
++	{
++		.addr = CPU_TO_BE64(FADUMP_DEST_CON_LOG | HRMOR_BIT),
++		.data_region = DUMP_REGION_CONSOLE,
++		.size = CPU_TO_BE32(FADUMP_DEST_CON_SIZE),
++	},
++	{
++		.addr = CPU_TO_BE64(FADUMP_DEST_HBRT_LOG | HRMOR_BIT),
++		.data_region = DUMP_REGION_HBRT_LOG,
++		.size = CPU_TO_BE32(FADUMP_DEST_HBRT_SIZE),
++	},
++	{
++		.addr = CPU_TO_BE64(FADUMP_DEST_SKIBOOT_BASE | HRMOR_BIT),
++		.data_region = DUMP_REGION_OPAL_MEMORY,
++		.size = CPU_TO_BE32(FADUMP_DEST_SKIBOOT_SIZE),
++	},
+ };
+ 
+ /* SP Interface Root Array, aka SPIRA */
+@@ -187,10 +211,32 @@ __section(".spirah.data") struct spirah spirah = {
+ #endif
+ 		.mdump_src = {
+ 			.addr		= CPU_TO_BE64(MDST_TABLE_OFF),
+-			.alloc_cnt	= CPU_TO_BE16(ARRAY_SIZE(init_mdst_table)),
++			.alloc_cnt	= CPU_TO_BE16(MDST_TABLE_SIZE / sizeof(struct mdst_table)),
+ 			.act_cnt	= CPU_TO_BE16(ARRAY_SIZE(init_mdst_table)),
+-			.alloc_len	=
+-				CPU_TO_BE32(sizeof(init_mdst_table)),
++			.alloc_len	= CPU_TO_BE32(sizeof(struct mdst_table)),
++			.act_len	= CPU_TO_BE32(sizeof(struct mdst_table)),
++		},
++		.mdump_dst = {
++			.addr		= CPU_TO_BE64(MDDT_TABLE_OFF),
++			.alloc_cnt	= CPU_TO_BE16(MDDT_TABLE_SIZE / sizeof(struct mddt_table)),
++			.act_cnt	= CPU_TO_BE16(ARRAY_SIZE(init_mddt_table)),
++			.alloc_len	= CPU_TO_BE32(sizeof(struct mddt_table)),
++			.act_len	= CPU_TO_BE32(sizeof(struct mddt_table)),
++		},
++		.mdump_res = {
++			.addr		= CPU_TO_BE64(MDRT_TABLE_BASE),
++			.alloc_cnt	=
++				CPU_TO_BE16(MDRT_TABLE_SIZE / sizeof(struct mdrt_table)),
++			/*
++			 * XXX: Ideally hostboot should use allocated count and
++			 *      length. But looks like hostboot uses actual count
++			 *      and length to get MDRT table size. And post dump
++			 *      hostboot will update act_cnt.
++			 */
++			.act_cnt	=
++				CPU_TO_BE16(MDRT_TABLE_SIZE / sizeof(struct mdrt_table)),
++			.alloc_len	= CPU_TO_BE32(sizeof(struct mdrt_table)),
++			.act_len	= CPU_TO_BE32(sizeof(struct mdrt_table)),
+ 		},
+ 	},
+ };
+diff --git a/hdata/test/hdata_to_dt.c b/hdata/test/hdata_to_dt.c
+index 8c61b4f62..46e755a66 100644
+--- a/hdata/test/hdata_to_dt.c
++++ b/hdata/test/hdata_to_dt.c
+@@ -77,6 +77,7 @@ unsigned long tb_hz = 512000000;
+ #define PVR_P9		0x004e0200
+ 
+ #define SPR_PVR		0x11f	/* RO: Processor version register */
++#define SPR_PIR_P9_MASK	0x7fff	/* Mask of implemented bits */
+ 
+ #define __CPU_H
+ struct cpu_thread {
+diff --git a/include/opal-dump.h b/include/opal-dump.h
+index 781627164..3619057c1 100644
+--- a/include/opal-dump.h
++++ b/include/opal-dump.h
+@@ -35,6 +35,7 @@
+ 
+ #define DUMP_REGION_CONSOLE	0x01
+ #define DUMP_REGION_HBRT_LOG	0x02
++#define DUMP_REGION_OPAL_MEMORY	0x03
+ 
+ /* Mainstore memory to be captured by FSP SYSDUMP */
+ #define DUMP_TYPE_SYSDUMP		0xF5
+-- 
+2.14.3
+

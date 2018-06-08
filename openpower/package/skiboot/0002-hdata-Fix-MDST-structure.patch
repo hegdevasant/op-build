@@ -1,0 +1,134 @@
+From 2dd3632cb130931329af280b9d7ab4e5bff03320 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 14:52:53 +0530
+Subject: [PATCH v3 02/18] hdata: Fix MDST structure
+
+We have split the type field to accommodate below fields which are used by
+memory preserving IPL.
+  - data region : dump data regions (like DUMP_REGION_* )
+  - dump type   : Reflects MDST entry usage (used by SYSDUMP -OR- FADUMP)
+
+This patch makes structure changes and necessary code adjustment.
+
+Note that these fields are not used by FSP to collect dump. They only care
+about address and size from MDST structure. Hence its safe to make this change.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ hdata/spira.c        |  6 ++++--
+ hw/fsp/fsp-sysdump.c | 10 ++++++----
+ include/opal-dump.h  | 18 ++++++++++++++----
+ 3 files changed, 24 insertions(+), 10 deletions(-)
+
+diff --git a/hdata/spira.c b/hdata/spira.c
+index 51d27386e..9f908edd3 100644
+--- a/hdata/spira.c
++++ b/hdata/spira.c
+@@ -92,12 +92,14 @@ __section(".cpuctrl.data") struct cpu_ctl_init_data cpu_ctl_init_data = {
+ __section(".mdst.data") struct mdst_table init_mdst_table[2] = {
+ 	{
+ 		.addr = CPU_TO_BE64(INMEM_CON_START | HRMOR_BIT),
+-		.type = CPU_TO_BE32(DUMP_REGION_CONSOLE),
++		.data_region = DUMP_REGION_CONSOLE,
++		.dump_type = DUMP_TYPE_SYSDUMP,
+ 		.size = CPU_TO_BE32(INMEM_CON_LEN),
+ 	},
+ 	{
+ 		.addr = CPU_TO_BE64(HBRT_CON_START | HRMOR_BIT),
+-		.type = CPU_TO_BE32(DUMP_REGION_HBRT_LOG),
++		.data_region = DUMP_REGION_HBRT_LOG,
++		.dump_type = DUMP_TYPE_SYSDUMP,
+ 		.size = CPU_TO_BE32(HBRT_CON_LEN),
+ 	},
+ };
+diff --git a/hw/fsp/fsp-sysdump.c b/hw/fsp/fsp-sysdump.c
+index 5f88733db..92b812eae 100644
+--- a/hw/fsp/fsp-sysdump.c
++++ b/hw/fsp/fsp-sysdump.c
+@@ -114,7 +114,8 @@ static int dump_region_tce_map(void)
+ 		fsp_tce_map(PSI_DMA_HYP_DUMP + t_size, (void *)addr, size);
+ 
+ 		/* Add entry to MDST table */
+-		mdst_table[i].type = dump_mem_region[i].type;
++		mdst_table[i].data_region = dump_mem_region[i].data_region;
++		mdst_table[i].dump_type = DUMP_TYPE_SYSDUMP;
+ 		mdst_table[i].size = dump_mem_region[i].size;
+ 		mdst_table[i].addr = cpu_to_be64(PSI_DMA_HYP_DUMP + t_size);
+ 
+@@ -194,7 +195,7 @@ static int dump_region_del_entry(uint32_t id)
+ 	lock(&mdst_lock);
+ 
+ 	for (i = 0; i < cur_mdst_entry; i++) {
+-		if (be32_to_cpu(dump_mem_region[i].type) != id)
++		if (dump_mem_region[i].data_region != id)
+ 			continue;
+ 
+ 		found = true;
+@@ -214,7 +215,7 @@ static int dump_region_del_entry(uint32_t id)
+ 	for ( ; i < cur_mdst_entry - 1; i++)
+ 		dump_mem_region[i] = dump_mem_region[i + 1];
+ 
+-	dump_mem_region[i].type = 0;
++	dump_mem_region[i].data_region = 0;
+ 	cur_mdst_entry--;
+ 
+ del_out:
+@@ -251,7 +252,8 @@ static int __dump_region_add_entry(uint32_t id, uint64_t addr, uint32_t size)
+ 	}
+ 
+ 	/* Add entry to dump memory region table */
+-	dump_mem_region[cur_mdst_entry].type = cpu_to_be32(id);
++	dump_mem_region[cur_mdst_entry].data_region = (u8)cpu_to_be32(id);
++	dump_mem_region[cur_mdst_entry].dump_type = DUMP_TYPE_SYSDUMP;
+ 	dump_mem_region[cur_mdst_entry].addr = cpu_to_be64(addr);
+ 	dump_mem_region[cur_mdst_entry].size = cpu_to_be32(size);
+ 
+diff --git a/include/opal-dump.h b/include/opal-dump.h
+index 9ffffeeee..0dedeae86 100644
+--- a/include/opal-dump.h
++++ b/include/opal-dump.h
+@@ -21,10 +21,13 @@
+ /*
+  * Dump region ids
+  *
+- * 0x01 - 0x7F : OPAL
++ * 0x00 - 0x00 : CPU data
++ * 0x01 - 0x3F : OPAL
++ * 0x40 - 0x79 : Reserved for future use
+  * 0x80 - 0xFF : Kernel
+  *
+  */
++#define DUMP_REGION_CPU_DATA		0x00
+ #define DUMP_REGION_OPAL_START		0x01
+ #define DUMP_REGION_OPAL_END		0x7F
+ #define DUMP_REGION_HOST_START		OPAL_DUMP_REGION_HOST_START
+@@ -33,16 +36,23 @@
+ #define DUMP_REGION_CONSOLE	0x01
+ #define DUMP_REGION_HBRT_LOG	0x02
+ 
++/* Mainstore memory to be captured by FSP SYSDUMP */
++#define DUMP_TYPE_SYSDUMP		0xF5
++/* Mainstore memory to preserve during IPL */
++#define DUMP_TYPE_FADUMP		0x00
++
+ /*
+- * Sapphire Memory Dump Source Table
++ *  Memory Dump Source Table
+  *
+  * Format of this table is same as Memory Dump Source Table (MDST)
+  * defined in HDAT spec.
+  */
+ struct mdst_table {
+ 	__be64	addr;
+-	__be32	type; /* DUMP_REGION_* */
++	uint8_t	data_region;	/* DUMP_REGION_* */
++	uint8_t dump_type;	/* DUMP_TYPE_* */
++	__be16	reserved;
+ 	__be32	size;
+-};
++} __packed;
+ 
+ #endif	/* __OPAL_DUMP_H */
+-- 
+2.14.3
+

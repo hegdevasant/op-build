@@ -1,0 +1,252 @@
+From 6baeb9850fa622b5097451aa194f5b26dae9c525 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:22:30 +0530
+Subject: [PATCH v3 12/18] fadump: Add fw-source-table to ibm,dump node
+
+Add 'fw-source-table' property to ibm,dump node. Payload will make use of
+these details to create ELF notes.
+
+This patch also adjusts MDST and MDDT entry for OPAL dump. Now OPAL dump
+size reflects runtime size of OPAL.
+
+Finally add reserve node for opal dump destination memory. If dump is available
+then reserve node size is max of current dump destination size and memory
+reserved for next dump.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ core/Makefile.inc   |   2 +-
+ core/init.c         |   4 ++
+ core/opal-mpipl.c   | 172 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ include/opal-dump.h |   3 +
+ 4 files changed, 180 insertions(+), 1 deletion(-)
+ create mode 100644 core/opal-mpipl.c
+
+diff --git a/core/Makefile.inc b/core/Makefile.inc
+index d36350590..5b7009ea8 100644
+--- a/core/Makefile.inc
++++ b/core/Makefile.inc
+@@ -9,7 +9,7 @@ CORE_OBJS += vpd.o hostservices.o platform.o nvram.o nvram-format.o hmi.o
+ CORE_OBJS += console-log.o ipmi.o time-utils.o pel.o pool.o errorlog.o
+ CORE_OBJS += timer.o i2c.o rtc.o flash.o sensor.o ipmi-opal.o
+ CORE_OBJS += flash-subpartition.o bitmap.o buddy.o pci-quirk.o powercap.o psr.o
+-CORE_OBJS += pci-dt-slot.o direct-controls.o cpufeatures.o
++CORE_OBJS += pci-dt-slot.o direct-controls.o cpufeatures.o opal-mpipl.o
+ 
+ ifeq ($(SKIBOOT_GCOV),1)
+ CORE_OBJS += gcov-profiling.o
+diff --git a/core/init.c b/core/init.c
+index 3b887a24d..3552af383 100644
+--- a/core/init.c
++++ b/core/init.c
+@@ -52,6 +52,7 @@
+ #include <imc.h>
+ #include <dts.h>
+ #include <sbe-p9.h>
++#include <opal-dump.h>
+ 
+ enum proc_gen proc_gen;
+ unsigned int pcie_max_link_speed;
+@@ -1036,6 +1037,9 @@ void __noreturn __nomcount main_cpu_entry(const void *fdt)
+ 	 */
+ 	p9_sbe_init();
+ 
++	/* init opal dump */
++	opal_fadump_init();
++
+ 	/* Initialize i2c */
+ 	p8_i2c_init();
+ 
+diff --git a/core/opal-mpipl.c b/core/opal-mpipl.c
+new file mode 100644
+index 000000000..9e95cdbae
+--- /dev/null
++++ b/core/opal-mpipl.c
+@@ -0,0 +1,172 @@
++/* Copyright 2018 IBM Corp.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *	http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++ * implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#define pr_fmt(fmt)	"FADUMP: " fmt
++
++#include <device.h>
++#include <mem-map.h>
++#include <mem_region.h>
++#include <mem_region-malloc.h>
++#include <opal.h>
++#include <opal-dump.h>
++#include <opal-internal.h>
++#include <skiboot.h>
++
++#include <ccan/endian/endian.h>
++
++#include "hdata/spira.h"
++
++/* Actual address of MDST and MDDT table */
++#define MDST_TABLE_BASE		(SKIBOOT_BASE + MDST_TABLE_OFF)
++#define MDDT_TABLE_BASE		(SKIBOOT_BASE + MDDT_TABLE_OFF)
++
++static struct spira_ntuple *ntuple_mdst;
++static struct spira_ntuple *ntuple_mddt;
++static struct spira_ntuple *ntuple_mdrt;
++
++
++/* Reserve OPAL dump destination memory */
++static void add_fadump_reserve_node(struct dt_node *dump_node)
++{
++	int i;
++	u64 cur_size = 0, new_size = 0;
++	/* Use relocated memory address */
++	struct mddt_table *mddt = (void *)(MDDT_TABLE_BASE);
++	struct mdrt_table *mdrt = (void *)(MDRT_TABLE_BASE);
++
++	/* If dump exists, get current opal dump size */
++	if (dt_find_property(dump_node, "result-table")) {
++		for (i = 0; i < ntuple_mdrt->act_cnt; i++) {
++			if (mdrt->data_region >= DUMP_REGION_OPAL_START &&
++			    mdrt->data_region < DUMP_REGION_OPAL_END)
++				cur_size += be32_to_cpu(mdrt->size);
++
++			mdrt++;
++		}
++	}
++
++	/* Get new OPAL dump reservation size */
++	for (i = 0; i < ntuple_mddt->act_cnt; i++) {
++		if (mddt->data_region >= DUMP_REGION_OPAL_START &&
++		    mddt->data_region < DUMP_REGION_OPAL_END)
++			new_size += be32_to_cpu(mddt->size);
++
++		mddt++;
++	}
++
++	mem_reserve_fw("ibm,firmware-dump", (u64)FADUMP_DEST_CON_LOG,
++		       new_size > cur_size ? new_size : cur_size);
++}
++
++/* Pass OPAL dump reservation details to payload via device tree. */
++static void dt_add_fadump_source_table(struct dt_node *dump_node,
++				       struct mdst_table *mdst,
++				       struct mddt_table *mddt)
++{
++	size_t prop_size;
++	struct fadump *source_table;
++
++	if (mdst->data_region != DUMP_REGION_OPAL_MEMORY ||
++	    mddt->data_region != DUMP_REGION_OPAL_MEMORY) {
++		prlog(PR_DEBUG,
++		      "OPAL memory entry is missing in MDST/MDDT table\n");
++		return;
++	}
++
++	prop_size = sizeof(struct fadump) + sizeof(struct fadump_section);
++	source_table = zalloc(prop_size);
++	if (!source_table) {
++		prlog(PR_ERR, "Failed to allocate memory\n");
++		return;
++	}
++
++	source_table->fadump_section_size = sizeof(struct fadump_section);
++	source_table->section_count = 1;
++	source_table->section[0].source_type = mdst->data_region;
++	source_table->section[0].source_addr = mdst->addr & ~(HRMOR_BIT);
++	source_table->section[0].source_size = mdst->size;
++	source_table->section[0].dest_addr = mddt->addr & ~(HRMOR_BIT);
++	source_table->section[0].dest_size = mddt->size;
++
++	dt_add_property(dump_node, "fw-source-table", source_table, prop_size);
++	free(source_table);
++}
++
++/*
++ * OPAL adjusts runtime OPAL size based on number of CPUs and PIR value.
++ * Hardcoded dump entry in MDST and MDDT table contains maximum size required
++ * to capture OPAL dump (so that we can capture early OPAL dump). Adjust
++ * OPAL dump entry in MDST and MDDT to reflect OPAL runtime size.
++ */
++static void adjust_opal_dump_size(struct dt_node *dump_node)
++{
++	int i;
++	u64 opal_size;
++	/* Use relocated memory address */
++	struct mdst_table *mdst = (void *)(MDST_TABLE_BASE);
++	struct mddt_table *mddt = (void *)(MDDT_TABLE_BASE);
++
++	/* Get OPAL runtime size */
++	if (!dt_find_property(opal_node, "opal-runtime-size"))
++		return;
++	opal_size = dt_prop_get_u64(opal_node, "opal-runtime-size");
++
++	/* Safe to assume MDST, MDDT table contains entry for OPAL dump
++	 * (see hdata/spira.c)
++	 */
++	for (i = 0; i < ntuple_mdst->act_cnt; i++) {
++		if (mdst->data_region != DUMP_REGION_OPAL_MEMORY) {
++			mdst++;
++			continue;
++		}
++		mdst->size = opal_size;
++		break;
++	}
++
++	for (i = 0; i < ntuple_mddt->act_cnt; i++) {
++		if (mddt->data_region != DUMP_REGION_OPAL_MEMORY) {
++			mddt++;
++			continue;
++		}
++		mddt->size = opal_size;
++		break;
++	}
++
++	/* Add OPAL dump reservation details to DT */
++	dt_add_fadump_source_table(dump_node, mdst, mddt);
++	/* Make sure OPAL dump destination memory is reserved */
++	add_fadump_reserve_node(dump_node);
++}
++
++void opal_fadump_init(void)
++{
++	struct dt_node *dump_node;
++
++	if (proc_gen < proc_gen_p9)
++		return;
++
++	/* fadump needs HDAT support */
++	dump_node = dt_find_by_path(dt_root, "ibm,dump");
++	if (!dump_node)
++		return;
++
++	/* Get MDST and MDDT ntuple from SPIRAH */
++	ntuple_mdst = &(spirah.ntuples.mdump_src);
++	ntuple_mddt = &(spirah.ntuples.mdump_dst);
++	ntuple_mdrt = &(spirah.ntuples.mdump_res);
++
++	adjust_opal_dump_size(dump_node);
++}
+diff --git a/include/opal-dump.h b/include/opal-dump.h
+index 3619057c1..d0d016eb0 100644
+--- a/include/opal-dump.h
++++ b/include/opal-dump.h
+@@ -82,4 +82,7 @@ struct mdrt_table {
+ 	__be64	padding;
+ } __packed;
+ 
++/* init opal dump */
++extern void opal_fadump_init(void);
++
+ #endif	/* __OPAL_DUMP_H */
+-- 
+2.14.3
+

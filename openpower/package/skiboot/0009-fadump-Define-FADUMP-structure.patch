@@ -1,0 +1,60 @@
+From 0d244a6739cb259507b09ff88b16523ad7dfac77 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:22:07 +0530
+Subject: [PATCH v3 09/18] fadump: Define FADUMP structure
+
+This structure is shared between OPAL and payload. During fadump registration
+payload will use this structure to pass kernel memory reservation details to
+OPAL. OPAL will use this structure to fill MDST, MDDT table. After fadump,
+OPAL uses MDRT table to fill this structure and passes this to payload via
+device tree.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ include/opal-api.h | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/include/opal-api.h b/include/opal-api.h
+index 09c77c18e..e30963909 100644
+--- a/include/opal-api.h
++++ b/include/opal-api.h
+@@ -1311,6 +1311,36 @@ enum {
+ 	OPAL_PCI_P2P_TARGET	= 1,
+ };
+ 
++/*
++ * FADUMP memory region ID usable by kernel
++ * 0x80 - 0xff -> Payload
++ */
++#define FADUMP_REGION_HOST_START	0x80
++#define FADUMP_REGION_HOST_END		0xff
++
++/*
++ * fadump section details. This structure is shared between OPAL and payload.
++ * During fadump registration payload will use this structure to pass kernel
++ * memory reservation details to OPAL. OPAL will use this structure to fill
++ * MDST, MDDT table. After fadump, OPAL uses MDRT table to fill this structure.
++ * And passes this to payload via device tree.
++ */
++struct fadump_section {
++	u8	source_type;	/* FADUMP_REGION_* */
++	u8	reserved[7];
++	u64	source_addr;
++	u64	source_size;
++	u64	dest_addr;
++	u64	dest_size;
++} __packed;
++
++struct fadump {
++	u16	fadump_section_size;	/* sizeof(struct fadump_section) */
++	u16	section_count;
++	u32	reserved;
++	struct	fadump_section section[];
++};
++
+ #endif /* __ASSEMBLY__ */
+ 
+ #endif /* __OPAL_API_H */
+-- 
+2.14.3
+

@@ -1,0 +1,154 @@
+From 53a0b1fba9e06774547a7ab25966d964323ea624 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:22:19 +0530
+Subject: [PATCH v3 11/18] hdata: Add result table property to ibm,dump node
+
+During MPIPL hostboot updates MDRT table with details of memory movement
+(source, destination address, size, etc). Convert these details to fadump
+structure format and pass it to kernel via 'result-table' property.
+
+Device tree property:
+  /ibm,dump/result-table - follows fadump structure format
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ hdata/spira.c | 91 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ hdata/spira.h |  4 +++
+ 2 files changed, 95 insertions(+)
+
+diff --git a/hdata/spira.c b/hdata/spira.c
+index cc9633186..669f82e86 100644
+--- a/hdata/spira.c
++++ b/hdata/spira.c
+@@ -26,6 +26,8 @@
+ #include <fsp-attn.h>
+ #include <fsp-leds.h>
+ #include <skiboot.h>
++#include <mem_region-malloc.h>
++#include <opal-dump.h>
+ 
+ #include "hdata.h"
+ #include "hostservices.h"
+@@ -1028,6 +1030,92 @@ static void dt_init_secureboot_node(const struct iplparams_sysparams *sysparams)
+ 	dt_add_property_cells(node, "hw-key-hash-size", hw_key_hash_size);
+ }
+ 
++static void fadump_add_result_table(const struct iplparams_iplparams *p)
++{
++	int i, j = 0;
++	u32 mdrt_cnt = spira.ntuples.mdump_res.act_cnt;
++	u32 mdrt_max_cnt = MDRT_TABLE_SIZE / sizeof(struct mdrt_table);
++	size_t prop_size;
++	struct mdrt_table *mdrt = (void *)(MDRT_TABLE_BASE);
++	struct fadump_section *fadump_section;
++	struct fadump *result_table;
++	struct dt_node *dump_node;
++
++	dump_node = dt_find_by_path(dt_root, "/ibm,dump");
++	if (!dump_node)
++		return;
++
++	/* Check boot params to detect MPIPL boot or not */
++	if (p->cec_ipl_maj_type != IPLPARAMS_MAJ_TYPE_REIPL)
++		return;
++	/*
++	 * On FSP system we get minor type as post dump IPL and on BMC system
++	 * we get platform reboot. Hence lets check for both values
++	 */
++	if (p->cec_ipl_min_type != IPLPARAMS_MIN_TYPE_POST_DUMP &&
++	    p->cec_ipl_min_type != IPLPARAMS_MIN_TYPE_PLAT_REBOOT) {
++		prlog(PR_DEBUG, "FADUMP: Non MPIPL reboot "
++		      "[minor type = 0x%x]\n", p->cec_ipl_min_type);
++		return;
++	}
++	if (p->cec_ipl_attrib != IPLPARAMS_ATTRIB_MEM_PRESERVE) {
++		prlog(PR_DEBUG, "FADUMP: Memory not preserved \n");
++		return;
++	}
++
++	if (mdrt_cnt == 0 || mdrt_cnt == mdrt_max_cnt) {
++		prlog(PR_ERR, "FADUMP: Invalid MDRT count : %x\n", mdrt_cnt);
++		return;
++	}
++
++	prlog(PR_DEBUG, "FADUMP: Dump found, MDRT count = 0x%x\n", mdrt_cnt);
++
++	/* Number of entries in MDRT table */
++	prop_size = sizeof(struct fadump) +
++		(mdrt_cnt * sizeof(struct fadump_section));
++	result_table = zalloc(prop_size);
++	if (!result_table) {
++		prlog(PR_ERR, "FADUMP: Failed to allocate memory\n");
++		return;
++	}
++
++	/* Copy MDRT entries to result-table */
++	result_table->fadump_section_size = sizeof(struct fadump_section);
++	for (i = 0; i < mdrt_cnt; i++) {
++		/* Skip garbage entry */
++		if ((mdrt->dest_addr == 0) || (mdrt->size == 0)) {
++			mdrt++;
++			continue;
++		}
++
++		if (mdrt->dump_type != DUMP_TYPE_FADUMP) {
++			mdrt++;
++			continue;
++		}
++
++		fadump_section = &(result_table->section[j++]);
++		fadump_section->source_type = mdrt->data_region;
++		/* Clear top bit */
++		fadump_section->source_addr = mdrt->src_addr & ~(HRMOR_BIT);
++		fadump_section->dest_addr = mdrt->dest_addr & ~(HRMOR_BIT);
++		fadump_section->source_size = mdrt->size;
++		fadump_section->dest_size = mdrt->size;
++		mdrt++;
++	}
++
++	if (j == 0) {
++		prlog(PR_DEBUG, "FADUMP: MDRT table is empty\n");
++		free(result_table);
++		return;
++	}
++
++	result_table->section_count = j;
++	/* Actual property size */
++	prop_size = sizeof(struct fadump) + (j * sizeof(struct fadump_section));
++	dt_add_property(dump_node, "result-table", result_table, prop_size);
++	free(result_table);
++}
++
+ static void fadump_add_node(void)
+ {
+ 	u64 fw_load_area[4];
+@@ -1190,6 +1278,9 @@ static void add_iplparams_ipl_params(const void *iplp, struct dt_node *node)
+ 	else
+ 		dt_add_property_strings(led_node, DT_PROPERTY_LED_MODE,
+ 					LED_MODE_GUIDING_LIGHT);
++
++	/* Populate fadump result table */
++	fadump_add_result_table(p);
+ }
+ 
+ static void add_iplparams_serials(const void *iplp, struct dt_node *node)
+diff --git a/hdata/spira.h b/hdata/spira.h
+index 398c1151a..0e952fc83 100644
+--- a/hdata/spira.h
++++ b/hdata/spira.h
+@@ -400,8 +400,12 @@ struct iplparams_iplparams {
+ #define IPLPARAMS_FSP_FW_IPL_SIDE_TEMP	0x01
+ 	uint8_t		ipl_speed;
+ 	__be16		cec_ipl_attrib;
++#define IPLPARAMS_ATTRIB_MEM_PRESERVE	PPC_BIT16(2)
+ 	uint8_t		cec_ipl_maj_type;
++#define IPLPARAMS_MAJ_TYPE_REIPL	0x1
+ 	uint8_t		cec_ipl_min_type;
++#define IPLPARAMS_MIN_TYPE_POST_DUMP	0xc
++#define IPLPARAMS_MIN_TYPE_PLAT_REBOOT	0xd
+ 	uint8_t		os_ipl_mode;
+ 	uint8_t		keylock_pos;
+ 	uint8_t		lmb_size;
+-- 
+2.14.3
+

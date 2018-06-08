@@ -1,0 +1,162 @@
+From a6dffb58171fdf7ef65ab4fcdb32a60219f5c151 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:22:53 +0530
+Subject: [PATCH v3 16/18] fadump: Add support to trigger memory preserving IPL
+ on BMC system
+
+On FSP based system we call 'attn' instruction. FSP detects attention and
+initiates memory preserving IPL. On BMC system we have to call SBE s0
+interrupt to initiate memory preserving IPL.
+
+This patch adds support to call s0 interrupt.
+Sequence :
+  - s0 interrupt on slave chip SBE
+  - s0 interrupt on master chip SBE
+
+Note:
+  - This patch enables MPIPL support on witherspoon only. We will enable
+    on other BMC systems later.
+  - It uses xscom node to detect master and slave chip. So that we can
+    trigger early MPIPL (even before initializing SBE driver).
+  - At present we do not have a proper way to detect SBE is alive or not.
+    So we wait for predefined time and then call normal reboot.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ hw/ipmi/ipmi-attn.c            |  1 +
+ hw/sbe-p9.c                    | 54 ++++++++++++++++++++++++++++++++++++++++++
+ include/sbe-p9.h               | 10 ++++++++
+ platforms/astbmc/witherspoon.c |  3 ++-
+ 4 files changed, 67 insertions(+), 1 deletion(-)
+
+diff --git a/hw/ipmi/ipmi-attn.c b/hw/ipmi/ipmi-attn.c
+index 8ff872c62..ed52e45ca 100644
+--- a/hw/ipmi/ipmi-attn.c
++++ b/hw/ipmi/ipmi-attn.c
+@@ -19,6 +19,7 @@
+ #include <pel.h>
+ #include <platform.h>
+ #include <processor.h>
++#include <sbe-p9.h>
+ #include <skiboot.h>
+ #include <stack.h>
+ #include <timebase.h>
+diff --git a/hw/sbe-p9.c b/hw/sbe-p9.c
+index 12d9e97ff..627ef428a 100644
+--- a/hw/sbe-p9.c
++++ b/hw/sbe-p9.c
+@@ -48,6 +48,7 @@
+ 
+ #include <chip.h>
+ #include <errorlog.h>
++#include <ipmi.h>
+ #include <lock.h>
+ #include <opal.h>
+ #include <sbe-p9.h>
+@@ -931,3 +932,56 @@ void p9_sbe_init(void)
+ 	/* Initiate SBE timeout poller */
+ 	opal_add_poller(p9_sbe_timeout_poll, NULL);
+ }
++
++/* Terminate and initiate MPIPL */
++void __attribute__((noreturn)) p9_sbe_terminate(const char *msg)
++{
++	uint32_t chip_id;
++	uint32_t primary_chip = -1;
++	int rc, waited = 0;
++	struct dt_node *xn;
++
++	dt_for_each_compatible(dt_root, xn, "ibm,xscom") {
++		chip_id = dt_get_chip_id(xn);
++
++		if (dt_has_node_property(xn, "primary", NULL)) {
++			primary_chip = chip_id;
++			continue;;
++		}
++
++		rc = xscom_write(chip_id,
++				 SBE_CONTROL_REG_RW, SBE_CONTROL_REG_S0);
++		/* Initiate normal reboot */
++		if (rc) {
++			prlog(PR_ERR, "Failed to write S0 interrupt [chip id = %x]\n",
++			      chip_id);
++			goto out_reboot;
++		}
++	}
++
++	if (primary_chip == -1) {
++		prlog(PR_ERR, "Master chip ID not found.\n");
++		goto out_reboot;
++	}
++
++	/* Write S0 interrupt on master SBE */
++	rc = xscom_write(primary_chip,
++			 SBE_CONTROL_REG_RW, SBE_CONTROL_REG_S0);
++	/* Initiate normal reboot */
++	if (rc) {
++		prlog(PR_ERR, "Failed to write S0 interrupt [chip id = %x]\n",
++		      primary_chip);
++		goto out_reboot;
++	}
++
++	/* XXX We do not have a way to detect SBE state. Hence wait for max
++	 *     time SBE takes to respond and then trigger normal reboot.
++	 */
++	while (waited <= SBE_CMD_TIMEOUT_MAX) {
++		time_wait_ms(100);
++		waited += 100;
++	}
++
++out_reboot:
++	ipmi_terminate(msg);
++}
+diff --git a/include/sbe-p9.h b/include/sbe-p9.h
+index 7101dc700..14d7a3af4 100644
+--- a/include/sbe-p9.h
++++ b/include/sbe-p9.h
+@@ -103,6 +103,13 @@
+ #define SBE_HOST_TIMER_EXPIRY		PPC_BIT(14)
+ #define SBE_HOST_RESPONSE_MASK		(PPC_BITMASK(0, 4) | SBE_HOST_TIMER_EXPIRY)
+ 
++/* SBE Control Register */
++#define SBE_CONTROL_REG_RW		0x00050008
++
++/* SBE interrupt s0/s1 bits */
++#define SBE_CONTROL_REG_S0		PPC_BIT(14)
++#define SBE_CONTROL_REG_S1		PPC_BIT(15)
++
+ /* SBE Target Type */
+ #define SBE_TARGET_TYPE_PROC		0x00
+ #define SBE_TARGET_TYPE_EX		0x01
+@@ -243,4 +250,7 @@ extern void p9_sbe_update_timer_expiry(uint64_t new_target);
+ /* Send skiboot relocated base address to SBE */
+ extern void p9_sbe_send_relocated_base(uint64_t val);
+ 
++/* Terminate and trigger MPIPL */
++extern void __attribute__((noreturn)) p9_sbe_terminate(const char *msg);
++
+ #endif	/* __SBE_P9_H */
+diff --git a/platforms/astbmc/witherspoon.c b/platforms/astbmc/witherspoon.c
+index cb09eefe0..30ec73157 100644
+--- a/platforms/astbmc/witherspoon.c
++++ b/platforms/astbmc/witherspoon.c
+@@ -27,6 +27,7 @@
+ #include <pci.h>
+ #include <pci-slot.h>
+ #include <phb4.h>
++#include <sbe-p9.h>
+ 
+ #include "astbmc.h"
+ 
+@@ -166,7 +167,7 @@ DECLARE_PLATFORM(witherspoon) = {
+ 	.cec_reboot             = astbmc_ipmi_reboot,
+ 	.elog_commit		= ipmi_elog_commit,
+ 	.exit			= ipmi_wdt_final_reset,
+-	.terminate		= ipmi_terminate,
++	.terminate		= p9_sbe_terminate,
+ 
+ 	.pci_get_slot_info	= dt_slot_get_slot_info,
+ };
+-- 
+2.14.3
+

@@ -1,0 +1,52 @@
+From 6dfed7422f6db18d63064a49486fd58c05a4ea21 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Thu, 31 May 2018 15:09:14 +0530
+Subject: [PATCH v3 03/18] hdata: Define MDDT and MDRT table
+
+MDDT and MDRT are part of SPIRAH and used in MPIPL.
+  - MDDT is used by OPAL to pass destination memory details to hostboot.
+  - MDRT is used by hostboot to pass post dump result table to OPAL.
+
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+---
+ include/opal-dump.h | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/include/opal-dump.h b/include/opal-dump.h
+index 0dedeae86..781627164 100644
+--- a/include/opal-dump.h
++++ b/include/opal-dump.h
+@@ -55,4 +55,30 @@ struct mdst_table {
+ 	__be32	size;
+ } __packed;
+ 
++/* Memory dump destination table (MDDT) */
++struct mddt_table {
++	__be64	addr;
++	uint8_t	data_region;	/* Same as mdst_table->data_region */
++	uint8_t dump_type;	/* Same as mdst_table->dump_type */
++	__be16	reserved;
++	__be32	size;
++} __packed;
++
++/*
++ * Memory dump result table (MDRT)
++ *
++ * List of the memory ranges that have been included in the dump. This table is
++ * filled by hostboot and passed to OPAL on second boot. OPAL/payload will use
++ * this table to extract the dump.
++ */
++struct mdrt_table {
++	__be64	src_addr;
++	__be64	dest_addr;
++	uint8_t	data_region;	/* Same as mdst_table->data_region */
++	uint8_t dump_type;	/* Same as mdst_table->dump_type */
++	__be16	reserved;
++	__be32	size;
++	__be64	padding;
++} __packed;
++
+ #endif	/* __OPAL_DUMP_H */
+-- 
+2.14.3
+
