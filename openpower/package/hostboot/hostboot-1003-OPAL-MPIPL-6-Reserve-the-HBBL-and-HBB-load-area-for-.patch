@@ -1,0 +1,61 @@
+From 9e902a743ecc1c186dd6066b8f1b6240a03a73bd Mon Sep 17 00:00:00 2001
+From: Raja Das <rajadas2@in.ibm.com>
+Date: Wed, 11 Apr 2018 00:06:54 -0500
+Subject: [PATCH] [OPAL-MPIPL][6] Reserve the HBBL and HBB load area for OPAL
+ fspless
+
+Presently, in Phyp systems this area is getting reserved basis the
+HRMOR fetch from CPU, we need to reserve this area for FspLess Opal
+sysytem as well, where HRMOR is hard-coded to 3968M by SBE
+
+Change-Id: I23d6225547d769e1a64046c8202364aa1dd2720b
+---
+ src/usr/runtime/populate_hbruntime.C | 22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/src/usr/runtime/populate_hbruntime.C b/src/usr/runtime/populate_hbruntime.C
+index aa077ca5c..723c5d861 100644
+--- a/src/usr/runtime/populate_hbruntime.C
++++ b/src/usr/runtime/populate_hbruntime.C
+@@ -907,8 +907,7 @@ errlHndl_t populate_HbRsvMem(uint64_t i_nodeId, bool i_master_node)
+         if(TARGETING::is_phyp_load())
+         {
+             // First phyp entry is for the entire 256M HB space
+-            uint64_t l_hbAddr = cpu_spr_value(CPU_SPR_HRMOR)
+-                - VMM_HRMOR_OFFSET;
++            uint64_t l_hbAddr = cpu_spr_value(CPU_SPR_HRMOR) - VMM_HRMOR_OFFSET;
+             l_elog = setNextHbRsvMemEntry(HDAT::RHB_TYPE_PRIMARY,
+                                           i_nodeId,
+                                           l_hbAddr,
+@@ -920,10 +919,27 @@ errlHndl_t populate_HbRsvMem(uint64_t i_nodeId, bool i_master_node)
+             {
+                 break;
+             }
+-
+         }
+         else if(TARGETING::is_sapphire_load())
+         {
++            // In fspless OPAL system, HBBL/HBB is getting loaded at 3968M addr,
++            // we need to reserve that space if HRMOR is set to 3968M, if HRMOR
++            // is set to 128M space then skip reserving.
++            uint64_t l_hbAddr = cpu_spr_value(CPU_SPR_HRMOR) - VMM_HRMOR_OFFSET;
++            if(l_hbAddr)
++            {
++                l_elog = setNextHbRsvMemEntry(HDAT::RHB_TYPE_PRIMARY,
++                        i_nodeId,
++                        l_hbAddr,
++                        VMM_HB_RSV_MEM_SIZE,
++                        HBRT_RSVD_MEM__PRIMARY,
++                        HDAT::RHB_READ_WRITE,
++                        false);
++                if(l_elog != nullptr)
++                {
++                    break;
++                }
++            }
+             // Opal data goes at top_of_mem
+             l_topMemAddr = TARGETING::get_top_mem_addr();
+             assert (l_topMemAddr != 0,
+-- 
+2.14.3
+

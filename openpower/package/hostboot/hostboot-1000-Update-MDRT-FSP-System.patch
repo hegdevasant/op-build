@@ -1,0 +1,49 @@
+commit fbea67f16d58a24d78797e1a080f21020e63b4a9
+Author: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date:   Tue May 1 17:47:31 2018 +0530
+
+    MPIPL: Update MDRT count for FSP based OPAL system
+    
+    At present hostboot updates MDRT actual count after MPIPL for PHYP systems
+    only. Soon we are going to support MPIPL on FSP based OPAL system as well.
+    Lets enable MDRT count update for FSP based OPAL system as well.
+    
+    Change-Id: Ibc16bf9c98786a36c2c38755da507a6e001e44db
+    Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+    Reviewed-on: http://ralgit01.raleigh.ibm.com/gerrit1/58166
+    Reviewed-by: NAGENDRA K. GURRAM <nagendra.g@in.ibm.com>
+    Tested-by: Jenkins Server <pfd-jenkins+hostboot@us.ibm.com>
+    Tested-by: Jenkins OP Build CI <op-jenkins+hostboot@us.ibm.com>
+    Tested-by: Jenkins OP HW <op-hw-jenkins+hostboot@us.ibm.com>
+    Tested-by: FSP CI Jenkins <fsp-CI-jenkins+hostboot@us.ibm.com>
+    Reviewed-by: Sachin Gupta <sgupta2m@in.ibm.com>
+    Reviewed-by: Daniel M. Crowell <dcrowell@us.ibm.com>
+
+diff --git a/src/usr/isteps/istep21/call_host_runtime_setup.C b/src/usr/isteps/istep21/call_host_runtime_setup.C
+index 6b0327401..4c3dca014 100644
+--- a/src/usr/isteps/istep21/call_host_runtime_setup.C
++++ b/src/usr/isteps/istep21/call_host_runtime_setup.C
+@@ -748,16 +748,14 @@ void* call_host_runtime_setup (void *io_pArgs)
+                 break;
+             }
+         }
+-        else if( TARGETING::is_phyp_load() )
++
++        //Update the MDRT value (for MS Dump)
++        l_err = RUNTIME::writeActualCount(RUNTIME::MS_DUMP_RESULTS_TBL);
++        if(l_err != NULL)
+         {
+-            //Update the MDRT value (for MS Dump)
+-            l_err = RUNTIME::writeActualCount(RUNTIME::MS_DUMP_RESULTS_TBL);
+-            if(l_err != NULL)
+-            {
+-                TRACFCOMP( ISTEPS_TRACE::g_trac_isteps_trace,
+-                           "write_MDRT_Count failed" );
+-                break;
+-            }
++            TRACFCOMP( ISTEPS_TRACE::g_trac_isteps_trace,
++                       "write_MDRT_Count failed" );
++            break;
+         }
+ 
+ #if 0 //@TODO-RTC:147565-Core checkstop escalation

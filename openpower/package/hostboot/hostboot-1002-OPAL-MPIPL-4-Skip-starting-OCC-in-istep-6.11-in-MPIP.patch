@@ -1,0 +1,50 @@
+From e481581b44833160b5e0b4f703555c49cdc80319 Mon Sep 17 00:00:00 2001
+From: Raja Das <rajadas2@in.ibm.com>
+Date: Mon, 2 Apr 2018 09:05:53 -0500
+Subject: [PATCH] [OPAL-MPIPL][4] Skip starting OCC in istep 6.11 in MPIPL
+ Open-power
+
+In open-power system, we are skipping OCC start from SRAM in the
+MPIPL path at istep 6.11, Since we are hitting checkstop when we
+reach istep 21.1, pmComplexReset.
+
+Change-Id: I648a2508dd03fb5dd8192656247e4511c570526d
+Reviewed-on: http://ralgit01.raleigh.ibm.com/gerrit1/56574
+Reviewed-by: Sachin Gupta <sgupta2m@in.ibm.com>
+Tested-by: Jenkins Server <pfd-jenkins+hostboot@us.ibm.com>
+Tested-by: Jenkins OP Build CI <op-jenkins+hostboot@us.ibm.com>
+Tested-by: FSP CI Jenkins <fsp-CI-jenkins+hostboot@us.ibm.com>
+Tested-by: Jenkins OP HW <op-hw-jenkins+hostboot@us.ibm.com>
+Reviewed-by: Christian R. Geddes <crgeddes@us.ibm.com>
+Reviewed-by: Daniel M. Crowell <dcrowell@us.ibm.com>
+---
+ src/usr/isteps/istep06/host_start_occ_xstop_handler.C | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/usr/isteps/istep06/host_start_occ_xstop_handler.C b/src/usr/isteps/istep06/host_start_occ_xstop_handler.C
+index 611dfd75b..821521ffb 100644
+--- a/src/usr/isteps/istep06/host_start_occ_xstop_handler.C
++++ b/src/usr/isteps/istep06/host_start_occ_xstop_handler.C
+@@ -125,8 +125,18 @@ void* host_start_occ_xstop_handler( void *io_pArgs )
+         }
+ #endif
+ 
+-
+ #ifdef CONFIG_IPLTIME_CHECKSTOP_ANALYSIS
++        // TODO - RTC 190807 - Skip OCC Start in MPIPL path in OPAL
++        // Revisit this to enable the OCC loading in 6.11 once PM related
++        // issue is resolved
++        if (TARGETING::is_sapphire_load())
++        {
++            if(l_sys->getAttr<TARGETING::ATTR_IS_MPIPL_HB>() == true)
++            {
++                break;
++            }
++        }
++
+         void* l_homerVirtAddrBase = reinterpret_cast<void*>
+           (VmmManager::INITIAL_MEM_SIZE);
+         uint64_t l_homerPhysAddrBase = mm_virt_to_phys(l_homerVirtAddrBase);
+-- 
+2.14.3
+

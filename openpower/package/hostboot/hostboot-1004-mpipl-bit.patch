@@ -1,0 +1,43 @@
+From 209c2e8d0830c94265d0f4e03be2cb29d5aa6192 Mon Sep 17 00:00:00 2001
+From: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Date: Tue, 5 Jun 2018 20:25:07 +0530
+Subject: [PATCH] mpipl bit
+
+Add MPIPL supported or not bit in HDAT.
+[This is test only patch. Nagendra will submit actual patch to upstream]
+
+
+---
+ src/usr/hdat/hdatiplparms.C | 3 +++
+ src/usr/hdat/hdatiplparms.H | 1 +
+ 2 files changed, 4 insertions(+)
+
+diff --git a/src/usr/hdat/hdatiplparms.C b/src/usr/hdat/hdatiplparms.C
+index d67795de7..dfc7296c9 100755
+--- a/src/usr/hdat/hdatiplparms.C
++++ b/src/usr/hdat/hdatiplparms.C
+@@ -699,6 +699,9 @@ void HdatIplParms::hdatGetSystemParamters()
+     this->iv_hdatIPLParams->iv_sysParms.hdatSystemAttributes |= 
+           l_pSysTarget->getAttr<ATTR_RISK_LEVEL>() ? HDAT_RISK_LEVEL_ELEVATED : 0 ;
+ 
++    this->iv_hdatIPLParams->iv_sysParms.hdatSystemAttributes |=
++          HDAT_MPIPL_SUPPORTED;
++
+     this->iv_hdatIPLParams->iv_sysParms.hdatMemoryScrubbing = 0;
+ 
+     // Get SPPL information
+diff --git a/src/usr/hdat/hdatiplparms.H b/src/usr/hdat/hdatiplparms.H
+index 4f674b366..0f27e0560 100755
+--- a/src/usr/hdat/hdatiplparms.H
++++ b/src/usr/hdat/hdatiplparms.H
+@@ -478,6 +478,7 @@ const hdatIplpFeatureFlagSetting_t hdatIplpFeatureFlagSettingsArray[NUM_RISK_LEV
+ #define HDAT_SMM_ENABLED                           0x40000000
+ #define HDAT_CRYPTO_DISABLED_BIT                   0x20000000
+ #define HDAT_RISK_LEVEL_ELEVATED                   0x10000000       
++#define HDAT_MPIPL_SUPPORTED                       0x08000000
+ 
+ #define HDAT_ECO_ENABLED                           0x80000000
+ #define HDAT_ECO_CAPABLE                           0x40000000
+-- 
+2.14.3
+

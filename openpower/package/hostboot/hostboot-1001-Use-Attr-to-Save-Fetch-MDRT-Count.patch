@@ -1,0 +1,329 @@
+From 38c8c582db87dffe5f21f53fe020226d01a6ed4d Mon Sep 17 00:00:00 2001
+From: Raja Das <rajadas2@in.ibm.com>
+Date: Thu, 10 May 2018 04:22:56 -0500
+Subject: [PATCH] Use Attr to Save/Fetch MDRT Count
+
+MDRT count is saved out into an attribute in istep14 and the same
+is fetched out in istep21 for Phyp as well as Opal(ZZ-L) system.
+
+Added libruntime.so to istep14, Since Dump relies upon runtime module
+
+Moved 'useRelocatedPayloadAddr' setting to call_host_mpipl_service(),
+So that we have everything set before calling doDumpCollect()
+
+Change-Id: I5d30135d86a1477a68509aaff0516efb4d620410
+---
+ src/include/usr/isteps/istep14list.H               |   1 +
+ src/usr/dump/dumpCollect.C                         |  21 ++--
+ src/usr/isteps/istep14/call_host_mpipl_service.C   | 131 +++++++++------------
+ src/usr/isteps/istep21/call_host_runtime_setup.C   |  20 ++--
+ .../common/xmltohb/attribute_types_hb.xml          |  14 +++
+ .../targeting/common/xmltohb/target_types_hb.xml   |   1 +
+ 6 files changed, 100 insertions(+), 88 deletions(-)
+
+diff --git a/src/include/usr/isteps/istep14list.H b/src/include/usr/isteps/istep14list.H
+index f64c74947..415074dd7 100644
+--- a/src/include/usr/isteps/istep14list.H
++++ b/src/include/usr/isteps/istep14list.H
+@@ -197,6 +197,7 @@ const DepModInfo g_istep14Dependancies = {
+     {
+         DEP_LIB(libistep14.so),
+         DEP_LIB(libdump.so),
++        DEP_LIB(libruntime.so),
+         DEP_LIB(libisteps_mss.so),
+         DEP_LIB(libpm.so),
+         DEP_LIB(libimageprocs.so),
+diff --git a/src/usr/dump/dumpCollect.C b/src/usr/dump/dumpCollect.C
+index 602ca72be..cbbb4e327 100644
+--- a/src/usr/dump/dumpCollect.C
++++ b/src/usr/dump/dumpCollect.C
+@@ -59,12 +59,11 @@ namespace DUMP
+ errlHndl_t doDumpCollect(void)
+ {
+     TRACFCOMP(g_trac_dump, "doDumpCollect - start ");
+-
+-    // Use relocated payload base to get MDST, MDDT, MDRT details
+-    RUNTIME::useRelocatedPayloadAddr(true);
+-
+     errlHndl_t l_err = NULL;
+ 
++    // Re-locating useRelocatedPayloadAddr setting to call_host_mpipl_service()
++    // So that we have everything set before calling doDumpCollect()
++
+     // Table Sizes
+     uint64_t srcTableSize = 0;
+     uint64_t destTableSize = 0;
+@@ -103,8 +102,6 @@ errlHndl_t doDumpCollect(void)
+ 
+     }while (0);
+ 
+-    RUNTIME::useRelocatedPayloadAddr(false);
+-
+     return (l_err);
+ }
+ 
+@@ -608,11 +605,21 @@ errlHndl_t copySrcToDest(dumpEntry *srcTableEntry,
+             break;
+         }
+ 
++        // Update the MDRT Count to Attribute to be fetched in istep 21 without
++        // loading runtime lib
++        TARGETING::TargetService& l_targetService = TARGETING::targetService();
++        TARGETING::Target* l_sys = NULL;
++        l_targetService.getTopLevelTarget(l_sys);
++        // Check whether we're in MPIPL mode
++        if(l_sys->getAttr<TARGETING::ATTR_IS_MPIPL_HB>())
++        {
++            l_sys->setAttr<TARGETING::ATTR_MPIPL_HB_MDRT_COUNT>(l_resultCount);
++        }
++
+         //Update actual count in RUNTIME
+         RUNTIME::saveActualCount(RUNTIME::MS_DUMP_RESULTS_TBL,
+                                  l_resultCount);
+ 
+-
+         //Write actual count into memory as well
+         // We know this will get whacked when FSP reloads the PHYP
+         // lid, but we want it to be valid before that to allow
+diff --git a/src/usr/isteps/istep14/call_host_mpipl_service.C b/src/usr/isteps/istep14/call_host_mpipl_service.C
+index 7eb7395fb..7367e8e4b 100644
+--- a/src/usr/isteps/istep14/call_host_mpipl_service.C
++++ b/src/usr/isteps/istep14/call_host_mpipl_service.C
+@@ -35,6 +35,8 @@
+ #include <targeting/common/utilFilter.H>
+ #include <targeting/targplatutil.H>
+ 
++#include <runtime/runtime.H>
++
+ #include <p9_mpipl_chip_cleanup.H>
+ #include <fapi2/plat_hwp_invoker.H>
+ 
+@@ -150,99 +152,80 @@ void* call_host_mpipl_service (void *io_pArgs)
+ 
+             errlHndl_t l_errMsg = NULL;
+ 
+-            // Dump relies upon the runtime module
+-            // Not declaring in istep DEP list cause if we load it
+-            // we want it to stay loaded
+-            if (  !VFS::module_is_loaded( "libruntime.so" ) )
+-            {
+-                l_err = VFS::module_load( "libruntime.so" );
+-
+-                if ( l_err )
+-                {
+-                    //  load module returned with errl set
+-                    TRACFCOMP( ISTEPS_TRACE::g_trac_isteps_trace,
+-                               "Could not load runtime module" );
+-                }
+-            }
++            // Use relocated payload base to get MDST, MDDT, MDRT details
++            RUNTIME::useRelocatedPayloadAddr(true);
+ 
+-            // If dump module successfully loaded then continue with DumpCollect
+-            // and messaging
+-            if (!l_err)
++            do
+             {
+-                do
+-                {
+-                    // send the start message
+-                    l_errMsg = DUMP::sendMboxMsg(DUMP::DUMP_MSG_START_MSG_TYPE);
+-
+-                    // If error, commit and send error message.
+-                    if (l_errMsg)
+-                    {
+-                        TRACFCOMP(ISTEPS_TRACE::g_trac_isteps_trace,
+-                       "ERROR : returned from DUMP::sendMboxMsg - dump start" );
+-
+-                        errlCommit( l_errMsg, HWPF_COMP_ID );
++                // send the start message
++                l_errMsg = DUMP::sendMboxMsg(DUMP::DUMP_MSG_START_MSG_TYPE);
+ 
+-                        // don't break in this case because we not want to fail
+-                        // the istep on the dump collect so we will continue
+-                        // after we log the errhandle that we can't send a
+-                        // message.
+-                    }
+-
+-                    // Call the dump collect
+-                    l_err = DUMP::doDumpCollect();
+-
+-                    // Got a Dump Collect error.. Commit the dumpCollect
+-                    // errorlog and then send an dump Error mbox message
+-                    // and FSP will decide what to do.
+-                    // We do not want dump Collect failures to terminate the
+-                    // istep.
+-                    if (l_err)
+-                    {
+-                        TRACFCOMP(ISTEPS_TRACE::g_trac_isteps_trace,
+-                             "ERROR : returned from DUMP::HbDumpCopySrcToDest");
+-
+-                        break;
+-                    }
+-
+-                } while(0);
+-
+-                DUMP::DUMP_MSG_TYPE msgType = DUMP::DUMP_MSG_END_MSG_TYPE;
+-
+-                // Send dumpCollect success trace
+-                if (!l_err)
+-                {
+-                    TRACFCOMP( ISTEPS_TRACE::g_trac_isteps_trace,
+-                               "SUCCESS : doDumpCollect" );
+-                }
+-                // got an error that we need to send a ERROR message to FSP
+-                // and commit the errorlog from dumpCollect.
+-                else
++                // If error, commit and send error message.
++                if (l_errMsg)
+                 {
+-                    msgType = DUMP::DUMP_MSG_ERROR_MSG_TYPE;
++                    TRACFCOMP(ISTEPS_TRACE::g_trac_isteps_trace,
++                   "ERROR : returned from DUMP::sendMboxMsg - dump start" );
+ 
+-                    // Commit the dumpCollect errorlog from above as
+-                    // we dont want dump collect to kill the istep
+-                    errlCommit( l_err, HWPF_COMP_ID );
++                    errlCommit( l_errMsg, HWPF_COMP_ID );
+ 
++                    // don't break in this case because we not want to fail
++                    // the istep on the dump collect so we will continue
++                    // after we log the errhandle that we can't send a
++                    // message.
+                 }
+ 
+-                // Send an Error mbox msg to FSP (either end or error)
+-                l_errMsg = DUMP::sendMboxMsg(msgType);
++                // Call the dump collect
++                l_err = DUMP::doDumpCollect();
+ 
+-                if (l_errMsg)
++                // Got a Dump Collect error.. Commit the dumpCollect
++                // errorlog and then send an dump Error mbox message
++                // and FSP will decide what to do.
++                // We do not want dump Collect failures to terminate the
++                // istep.
++                if (l_err)
+                 {
+                     TRACFCOMP(ISTEPS_TRACE::g_trac_isteps_trace,
+-                              "ERROR : returned from DUMP::sendMboxMsg" );
++                         "ERROR : returned from DUMP::HbDumpCopySrcToDest");
+ 
+-                    errlCommit( l_errMsg, HWPF_COMP_ID );
++                    break;
+                 }
+ 
++            } while(0);
++
++            DUMP::DUMP_MSG_TYPE msgType = DUMP::DUMP_MSG_END_MSG_TYPE;
++
++            // Send dumpCollect success trace
++            if (!l_err)
++            {
++                TRACFCOMP( ISTEPS_TRACE::g_trac_isteps_trace,
++                           "SUCCESS : doDumpCollect" );
+             }
++            // got an error that we need to send a ERROR message to FSP
++            // and commit the errorlog from dumpCollect.
+             else
++            {
++                msgType = DUMP::DUMP_MSG_ERROR_MSG_TYPE;
++
++                // Commit the dumpCollect errorlog from above as
++                // we dont want dump collect to kill the istep
++                errlCommit( l_err, HWPF_COMP_ID );
++
++            }
++
++            // Send an Error mbox msg to FSP (either end or error)
++            l_errMsg = DUMP::sendMboxMsg(msgType);
++
++            if (l_errMsg)
+             {
+                 TRACFCOMP(ISTEPS_TRACE::g_trac_isteps_trace,
+-                      "ERROR : returned from VFS::module_load (libruntime.so)");
++                          "ERROR : returned from DUMP::sendMboxMsg" );
++
++                errlCommit( l_errMsg, HWPF_COMP_ID );
+             }
++
++             RUNTIME::useRelocatedPayloadAddr(false);
++             // Wipe out our cache of the NACA/SPIRA pointers
++             RUNTIME::rediscover_hdat();
+         }
+ 
+         // If got an error in the procedure or collection of the dump kill the
+diff --git a/src/usr/isteps/istep21/call_host_runtime_setup.C b/src/usr/isteps/istep21/call_host_runtime_setup.C
+index 237f45691..602ff5883 100644
+--- a/src/usr/isteps/istep21/call_host_runtime_setup.C
++++ b/src/usr/isteps/istep21/call_host_runtime_setup.C
+@@ -781,16 +781,22 @@ void* call_host_runtime_setup (void *io_pArgs)
+                 break;
+             }
+         }
+-
+-        //Update the MDRT value (for MS Dump)
+-        l_err = RUNTIME::writeActualCount(RUNTIME::MS_DUMP_RESULTS_TBL);
+-        if(l_err != NULL)
++        
++        // Update the MDRT Count from Attribute
++        TargetService& l_targetService = targetService();
++        Target* l_sys = NULL;
++        l_targetService.getTopLevelTarget(l_sys);
++        if(l_sys->getAttr<ATTR_IS_MPIPL_HB>())
+         {
+-            TRACFCOMP( ISTEPS_TRACE::g_trac_isteps_trace,
+-                       "write_MDRT_Count failed" );
+-            break;
++            uint32_t l_mdrtCount =
++                l_sys->getAttr<TARGETING::ATTR_MPIPL_HB_MDRT_COUNT>();
++            //Update actual count in RUNTIME
++            RUNTIME::saveActualCount(RUNTIME::MS_DUMP_RESULTS_TBL, l_mdrtCount);
+         }
+ 
++        //Update the MDRT value
++        RUNTIME::writeActualCount(RUNTIME::MS_DUMP_RESULTS_TBL);
++
+ #if 0 //@TODO-RTC:147565-Core checkstop escalation
+         // Revert back to standard runtime mode where core checkstops
+         //  do not escalate to system checkstops
+diff --git a/src/usr/targeting/common/xmltohb/attribute_types_hb.xml b/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
+index e1cebe965..815dd02f5 100755
+--- a/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
++++ b/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
+@@ -118,6 +118,20 @@
+     <hbOnly/>
+ </attribute>
+ 
++<attribute>
++    <id>MPIPL_HB_MDRT_COUNT</id>
++    <description>Actual MDRT count in Memory Preserving IPL mode.</description>
++    <simpleType>
++        <uint32_t>
++            <default>0</default>
++        </uint32_t>
++    </simpleType>
++    <persistency>volatile-zeroed</persistency>
++    <readable/>
++    <writeable/>
++    <hbOnly/>
++</attribute>
++
+ <attribute>
+     <id>IS_SLAVE_DRAWER</id>
+     <description>0 = is master node, 1 = is slave node</description>
+diff --git a/src/usr/targeting/common/xmltohb/target_types_hb.xml b/src/usr/targeting/common/xmltohb/target_types_hb.xml
+index 46c145c75..caa8adc9f 100644
+--- a/src/usr/targeting/common/xmltohb/target_types_hb.xml
++++ b/src/usr/targeting/common/xmltohb/target_types_hb.xml
+@@ -34,6 +34,7 @@
+ <targetTypeExtension>
+     <id>sys-sys-power9</id>
+     <attribute><id>IS_MPIPL_HB</id></attribute>
++    <attribute><id>MPIPL_HB_MDRT_COUNT</id></attribute>
+     <attribute><id>IBSCOM_ENABLE_OVERRIDE</id></attribute>
+     <attribute><id>HB_MUTEX_TEST_LOCK</id></attribute>
+     <attribute><id>HB_EXISTING_IMAGE</id></attribute>
+-- 
+2.14.3
+
