@@ -1,0 +1,83 @@
+From 9aaf24ebc4d205c960e2f5b21c7ad1bfcba3aa53 Mon Sep 17 00:00:00 2001
+From: Raja Das <rajadas2@in.ibm.com>
+Date: Wed, 31 Jan 2018 12:13:39 -0600
+Subject: [PATCH 2/2] Fenced Enabled check along with vdd_pfet_disable_core for
+ scoms
+
+In core stopstate2, only checking the vdd_pfet_disable_core is not
+enough before scoming for C_CLOCK_STAT_SL, since in stopstate2 fences
+are up, so need to check for fenced bit as well in C_NET_CTRL0 reg.
+
+Change-Id: If99dd3d357b6e07c56417edae0868c03f2f0b720
+Reviewed-on: http://ralgit01.raleigh.ibm.com/gerrit1/52993
+Tested-by: FSP CI Jenkins <fsp-CI-jenkins+hostboot@us.ibm.com>
+Tested-by: Jenkins Server <pfd-jenkins+hostboot@us.ibm.com>
+Tested-by: PPE CI <ppe-ci+hostboot@us.ibm.com>
+Tested-by: Hostboot CI <hostboot-ci+hostboot@us.ibm.com>
+Reviewed-by: Gregory S. Still <stillgs@us.ibm.com>
+Reviewed-by: Sachin Gupta <sgupta2m@in.ibm.com>
+Reviewed-by: Jennifer A. Stofer <stofer@us.ibm.com>
+Reviewed-on: http://ralgit01.raleigh.ibm.com/gerrit1/53809
+---
+ .../procedures/hwp/pm/p9_query_core_access_state.C | 22 ++++++++++++++++------
+ 1 file changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/src/import/chips/p9/procedures/hwp/pm/p9_query_core_access_state.C b/src/import/chips/p9/procedures/hwp/pm/p9_query_core_access_state.C
+index 027181cd4..6a4a0cace 100644
+--- a/src/import/chips/p9/procedures/hwp/pm/p9_query_core_access_state.C
++++ b/src/import/chips/p9/procedures/hwp/pm/p9_query_core_access_state.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER sbe Project                                                  */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2016,2017                        */
++/* Contributors Listed Below - COPYRIGHT 2016,2018                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -52,6 +52,7 @@
+ #include "p9_query_core_access_state.H"
+ 
+ #define SSHSRC_STOP_GATED 0
++#define NET_CTRL0_FENCED  18
+ 
+ // ----------------------------------------------------------------------
+ // Procedure Function
+@@ -64,7 +65,7 @@ p9_query_core_access_state(
+     bool& o_is_scanable)
+ {
+ 
+-    fapi2::buffer<uint64_t> l_csshsrc, l_cpfetsense, l_sisr;
++    fapi2::buffer<uint64_t> l_csshsrc, l_cpfetsense, l_sisr, l_netCtrl0;
+     fapi2::buffer<uint64_t> l_data64;
+     uint32_t l_coreStopLevel = 0;
+     uint8_t  vdd_pfet_disable_core = 0;
+@@ -165,12 +166,21 @@ p9_query_core_access_state(
+     // Read clocks running registers
+     if (vdd_pfet_disable_core == 0)
+     {
++        // Get the fence bit for this core from C_NET_CTRL0
++        FAPI_TRY(fapi2::getScom(i_target, C_NET_CTRL0, l_netCtrl0), "Error reading data from C_NET_CTRL0");
+ 
+-        FAPI_DBG("   Read Core EPS clock status for core");
+-        FAPI_TRY(fapi2::getScom(i_target, C_CLOCK_STAT_SL,  l_data64), "Error reading data from C_CLOCK_STAT_SL");
++        if (l_netCtrl0.getBit<NET_CTRL0_FENCED>() == 0)
++        {
++            FAPI_DBG("   Read Core EPS clock status for core");
++            FAPI_TRY(fapi2::getScom(i_target, C_CLOCK_STAT_SL,  l_data64), "Error reading data from C_CLOCK_STAT_SL");
+ 
+-        l_data64.extractToRight<uint8_t>(c_exec_hasclocks, 6, 1);
+-        l_data64.extractToRight<uint8_t>(c_pc_hasclocks,   5, 1);
++            l_data64.extractToRight<uint8_t>(c_exec_hasclocks, 6, 1);
++            l_data64.extractToRight<uint8_t>(c_pc_hasclocks,   5, 1);
++        }
++        else
++        {
++            FAPI_INF("Core Fences are up, so skipped reading the C_CLOCK_STAT_SL Register");
++        }
+     }
+ 
+     FAPI_INF("Core Clock Status : PC_HASCLOCKS(%d) EXEC_HASCLOCKS(%d)", c_pc_hasclocks, c_exec_hasclocks);
+-- 
+2.14.3
+

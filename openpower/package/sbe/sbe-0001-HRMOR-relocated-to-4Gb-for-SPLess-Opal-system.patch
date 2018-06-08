@@ -1,0 +1,44 @@
+From 75028b81edcab68db2a2b7793567c0b98d8d6bcc Mon Sep 17 00:00:00 2001
+From: Raja Das <rajadas2@in.ibm.com>
+Date: Wed, 21 Mar 2018 23:29:02 -0500
+Subject: [PATCH 1/2] HRMOR relocated to 4Gb for SPLess Opal system
+
+64Mb * 62 = 3968Mb Address
+
+Change-Id: I77eb5cb018b1f684b4322f23c2b64307bfe1e230
+---
+ src/hwpf/target.C | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/src/hwpf/target.C b/src/hwpf/target.C
+index b1e1a0c0a..c1b351ef4 100644
+--- a/src/hwpf/target.C
++++ b/src/hwpf/target.C
+@@ -104,6 +104,9 @@ extern fapi2::ReturnCode
+         fapi2::Target<fapi2::TARGET_TYPE_PROC_CHIP> l_chipTarget =
+             plat_getChipTarget();
+         const fapi2::Target<fapi2::TARGET_TYPE_SYSTEM> FAPI_SYSTEM;
++#ifdef _S0S1_
++	const uint64_t hrmor_spless = 4160749568ull;//3968 * 1024 * 1024ull;
++#endif
+ 
+         FAPI_TRY(FAPI_ATTR_GET(fapi2::ATTR_RISK_LEVEL, FAPI_SYSTEM, l_riskLvl));
+         //Getting SCRATCH_REGISTER_8 register value
+@@ -213,7 +216,13 @@ extern fapi2::ReturnCode
+             FAPI_TRY(PLAT_ATTR_INIT(fapi2::ATTR_IS_MPIPL, FAPI_SYSTEM, l_isMpIpl));
+ 
+             l_tempReg.extractToRight<3, 1>(l_isSpMode);
+-
++#ifdef _S0S1_
++            FAPI_DBG("Setting up ATTR_HOSTBOOT_HRMOR_OFFSET in SPless mode to 4Gbytes");
++            if(!l_isSpMode)
++            {
++                FAPI_TRY(PLAT_ATTR_INIT(fapi2::ATTR_HOSTBOOT_HRMOR_OFFSET, FAPI_SYSTEM, hrmor_spless));
++            }
++#endif
+             FAPI_DBG("Setting up ATTR_IS_SP_MODE");
+             FAPI_TRY(PLAT_ATTR_INIT(fapi2::ATTR_IS_SP_MODE, l_chipTarget, l_isSpMode));
+             l_tempReg.extractToRight<28, 4>(l_riskLvl);
+-- 
+2.14.3
+
