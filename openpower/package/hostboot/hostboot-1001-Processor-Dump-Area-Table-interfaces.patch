@@ -1,4 +1,4 @@
-From 5c2b052e239c8670c564b3e8754abc6ac440bd1b Mon Sep 17 00:00:00 2001
+From 449f38fb82be41d92a750569b62d3427c20b228f Mon Sep 17 00:00:00 2001
 From: Raja Das <rajadas2@in.ibm.com>
 Date: Thu, 25 Oct 2018 11:26:25 +0530
 Subject: [PATCH] OPAL/MPIPL: Processor Dump Area Table interfaces
@@ -42,18 +42,18 @@ Reviewed-by: Daniel M. Crowell <dcrowell@us.ibm.com>
 ---
  src/include/usr/dump/dumpif.H                      | 113 +++++++-
  src/include/usr/dump/dumpreasoncodes.H             |  34 ++-
- src/include/usr/runtime/runtime.H                  |  20 +-
- src/include/usr/vmmconst.h                         |   6 +-
+ src/include/usr/runtime/runtime.H                  |  22 +-
+ src/include/usr/vmmconst.h                         |   8 +-
  src/usr/dump/dumpCollect.C                         | 318 ++++++++++++++++++++-
  src/usr/hdat/hdatspiraH.H                          |   3 +-
- src/usr/isteps/istep14/call_host_mpipl_service.C   |  15 +
- src/usr/isteps/istep21/call_host_runtime_setup.C   |  22 +-
- src/usr/runtime/hdatservice.C                      |  67 +++++
- src/usr/runtime/hdatservice.H                      |  17 ++
- src/usr/runtime/hdatstructs.H                      |   3 +-
- .../common/xmltohb/attribute_types_hb.xml          |  62 ++++
- .../targeting/common/xmltohb/target_types_hb.xml   |  12 +
- 13 files changed, 667 insertions(+), 25 deletions(-)
+ src/usr/isteps/istep14/call_host_mpipl_service.C   |  17 +-
+ src/usr/isteps/istep21/call_host_runtime_setup.C   |  24 +-
+ src/usr/runtime/hdatservice.C                      |  69 ++++-
+ src/usr/runtime/hdatservice.H                      |  19 +-
+ src/usr/runtime/hdatstructs.H                      |   5 +-
+ .../common/xmltohb/attribute_types_hb.xml          |  64 ++++-
+ .../targeting/common/xmltohb/target_types_hb.xml   |  14 +-
+ 13 files changed, 676 insertions(+), 34 deletions(-)
 
 diff --git a/src/include/usr/dump/dumpif.H b/src/include/usr/dump/dumpif.H
 index 21bdde05c..ea48a71fd 100644
@@ -264,9 +264,18 @@ index fb959fdca..eeeec126a 100644
  };
  
 diff --git a/src/include/usr/runtime/runtime.H b/src/include/usr/runtime/runtime.H
-index b5e717e2b..9d22e387b 100644
+index b5e717e2b..1e3bb13b5 100644
 --- a/src/include/usr/runtime/runtime.H
 +++ b/src/include/usr/runtime/runtime.H
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2012,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
 @@ -229,7 +229,8 @@ enum SectionId
      HRMOR_STASH,          //< Pointer to address in reserved memory
                            //  where PHYP can write HRMOR
@@ -302,9 +311,18 @@ index b5e717e2b..9d22e387b 100644
   * @brief  Use relocated payload base address
   *
 diff --git a/src/include/usr/vmmconst.h b/src/include/usr/vmmconst.h
-index 3cf33e96f..ee280c6c2 100644
+index 3cf33e96f..2d1a40b52 100644
 --- a/src/include/usr/vmmconst.h
 +++ b/src/include/usr/vmmconst.h
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2011,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2011,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
 @@ -177,7 +177,11 @@ enum BlockPriority
  #define VMM_ALL_HOMER_OCC_MEMORY_SIZE \
   (VMM_OCC_COMMON_SIZE + VMM_HOMER_REGION_SIZE)
@@ -689,9 +707,18 @@ index c0d336794..23fd7fda4 100755
  
  /*-----------------------------------------------------------------------------*/
 diff --git a/src/usr/isteps/istep14/call_host_mpipl_service.C b/src/usr/isteps/istep14/call_host_mpipl_service.C
-index 7367e8e4b..d8bdaa5af 100644
+index 7367e8e4b..2d8659952 100644
 --- a/src/usr/isteps/istep14/call_host_mpipl_service.C
 +++ b/src/usr/isteps/istep14/call_host_mpipl_service.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2015,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2015,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
 @@ -28,6 +28,7 @@
  
  #include <isteps/hwpisteperror.H>
@@ -722,9 +749,18 @@ index 7367e8e4b..d8bdaa5af 100644
                  l_errMsg = DUMP::sendMboxMsg(DUMP::DUMP_MSG_START_MSG_TYPE);
  
 diff --git a/src/usr/isteps/istep21/call_host_runtime_setup.C b/src/usr/isteps/istep21/call_host_runtime_setup.C
-index bde7a34d8..2c67f0210 100644
+index bde7a34d8..6becd4df2 100644
 --- a/src/usr/isteps/istep21/call_host_runtime_setup.C
 +++ b/src/usr/isteps/istep21/call_host_runtime_setup.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2015,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2015,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
 @@ -820,8 +820,8 @@ void* call_host_runtime_setup (void *io_pArgs)
                  break;
              }
@@ -762,9 +798,18 @@ index bde7a34d8..2c67f0210 100644
  
          //Update the MDRT value (for MS Dump)
 diff --git a/src/usr/runtime/hdatservice.C b/src/usr/runtime/hdatservice.C
-index f77165d8d..61163a2f7 100644
+index f77165d8d..5e5aef454 100644
 --- a/src/usr/runtime/hdatservice.C
 +++ b/src/usr/runtime/hdatservice.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2012,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
 @@ -39,6 +39,7 @@
  #include "errlud_hdat.H"
  #include <errl/errlmanager.H>
@@ -868,9 +913,18 @@ index f77165d8d..61163a2f7 100644
  {
      return Singleton<hdatService>::instance().useRelocatedPayloadAddr(val);
 diff --git a/src/usr/runtime/hdatservice.H b/src/usr/runtime/hdatservice.H
-index 44ff12a58..1ea48d8f2 100644
+index 44ff12a58..67cdc44d2 100644
 --- a/src/usr/runtime/hdatservice.H
 +++ b/src/usr/runtime/hdatservice.H
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2013,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2013,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
 @@ -128,6 +128,23 @@ namespace RUNTIME
          errlHndl_t updateHostDataSectionActual( SectionId i_section,
                                                  uint16_t i_count );
@@ -896,9 +950,18 @@ index 44ff12a58..1ea48d8f2 100644
           * @brief  Retrieve and log FFDC data relevant to a given section of
           *         host data memory
 diff --git a/src/usr/runtime/hdatstructs.H b/src/usr/runtime/hdatstructs.H
-index 2f05a2a70..94f4c1b71 100644
+index 2f05a2a70..f21fa071f 100644
 --- a/src/usr/runtime/hdatstructs.H
 +++ b/src/usr/runtime/hdatstructs.H
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2012,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
 @@ -121,7 +121,8 @@ enum hdatSpiraHDataAreas
      SPIRAH_MS_DUMP_SRC_TBL  = 3,    // mainstore dump source table
      SPIRAH_MS_DUMP_DST_TBL  = 4,    // mainstore dump destination table
@@ -910,9 +973,18 @@ index 2f05a2a70..94f4c1b71 100644
  
  /** @enum hdatSpiraSDataAreas
 diff --git a/src/usr/targeting/common/xmltohb/attribute_types_hb.xml b/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
-index 1c574ebaa..c032675a3 100755
+index 1c574ebaa..c55bfec3b 100755
 --- a/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
 +++ b/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
+@@ -5,7 +5,7 @@
+ <!--                                                                        -->
+ <!-- OpenPOWER HostBoot Project                                             -->
+ <!--                                                                        -->
+-<!-- Contributors Listed Below - COPYRIGHT 2012,2018                        -->
++<!-- Contributors Listed Below - COPYRIGHT 2012,2019                        -->
+ <!-- [+] Google Inc.                                                        -->
+ <!-- [+] International Business Machines Corp.                              -->
+ <!--                                                                        -->
 @@ -916,6 +916,68 @@
      </hwpfToHbAttrMap>
    </attribute>
@@ -983,12 +1055,21 @@ index 1c574ebaa..c032675a3 100755
      <id>SBE_COMM_ADDR</id>
      <description>
 diff --git a/src/usr/targeting/common/xmltohb/target_types_hb.xml b/src/usr/targeting/common/xmltohb/target_types_hb.xml
-index eaf0ca0b6..a9303dd42 100644
+index eaf0ca0b6..ce7c76ccf 100644
 --- a/src/usr/targeting/common/xmltohb/target_types_hb.xml
 +++ b/src/usr/targeting/common/xmltohb/target_types_hb.xml
-@@ -286,6 +286,18 @@
+@@ -5,7 +5,7 @@
+ <!--                                                                        -->
+ <!-- OpenPOWER HostBoot Project                                             -->
+ <!--                                                                        -->
+-<!-- Contributors Listed Below - COPYRIGHT 2012,2018                        -->
++<!-- Contributors Listed Below - COPYRIGHT 2012,2019                        -->
+ <!-- [+] Google Inc.                                                        -->
+ <!-- [+] International Business Machines Corp.                              -->
+ <!--                                                                        -->
+@@ -289,6 +289,18 @@
      <attribute>
-       <id>MPIPL_HB_MDRT_COUNT</id>
+       <id>OCC_COMMON_AREA_PHYS_ADDR</id>
      </attribute>
 +    <attribute>
 +      <id>PDA_CAPTURED_THREAD_REG_ARRAY_ADDR</id>
@@ -1002,9 +1083,9 @@ index eaf0ca0b6..a9303dd42 100644
 +    <attribute>
 +      <id>PDA_THREAD_REG_STATE_ENTRY_FORMAT</id>
 +    </attribute>
-     <attribute>
-       <id>OCC_COMMON_AREA_PHYS_ADDR</id>
-     </attribute>
+   </targetTypeExtension>
+ 
+   <targetTypeExtension>
 -- 
 2.14.3
 
