@@ -1,0 +1,1073 @@
+From ecda76f10eb773f39dbe71b011e5c3487a715644 Mon Sep 17 00:00:00 2001
+From: Raja Das <rajadas2@in.ibm.com>
+Date: Thu, 25 Oct 2018 11:26:25 +0530
+Subject: [PATCH] OPAL/MPIPL: Processor Dump Area Table interfaces
+
+This patch adds support to collect processor architected register data.
+
+SBE <--> Hostboot :
+-------------------
+  During first boot, hostboot reserves memory to copy architected register
+  data by SBE and sends address to each SBE (see commit 9f49d11b). During
+  MPIPL SBE collects architected register data and copies to reserved
+  memory.
+
+Hostboot <--> Hypervisor :
+--------------------------
+  HDAT/SPIRAH has new ntuple (Processor Dump Area) to pass various
+  architected register data. During IPL/runtime hypervisor reserves memory
+  for architected register data and updates SPIRAH.
+
+  During MPIPL (istep 14.8), hostboot converts SBE formated architected
+  registers data to HDAT format and copies to hypervisor reserved memory.
+  It uses NACA/SPIRAH pointers to get hypervisor reserved memory details.
+
+  Hostboot has to update SPIRAH ntuple after loading new LID to memory.
+  Hence this patch introdues below new attributes:
+    - PDA_CAPTURED_THREAD_REG_ARRAY_ADDR
+    - PDA_CAPTURED_THREAD_REG_ARRAY_SIZE
+    - PDA_THREAD_REG_ENTRY_SIZE
+    - PDA_THREAD_REG_STATE_ENTRY_FORMAT
+
+Change-Id: Idc7489e8cf6fc68fe80f028ba6deb97aa72486bf
+CC: Sampa Misra <sampmisr@in.ibm.com>
+CC: Daniel M. Crowell <dcrowell@us.ibm.com>
+Signed-off-by: Vasant Hegde <hegdevasant@linux.vnet.ibm.com>
+Reviewed-on: http://rchgit01.rchland.ibm.com/gerrit1/61627
+Tested-by: Jenkins Server <pfd-jenkins+hostboot@us.ibm.com>
+Tested-by: Jenkins OP Build CI <op-jenkins+hostboot@us.ibm.com>
+Tested-by: FSP CI Jenkins <fsp-CI-jenkins+hostboot@us.ibm.com>
+Tested-by: Jenkins OP HW <op-hw-jenkins+hostboot@us.ibm.com>
+Reviewed-by: Daniel M. Crowell <dcrowell@us.ibm.com>
+---
+ src/include/usr/dump/dumpif.H                      | 113 +++++++-
+ src/include/usr/dump/dumpreasoncodes.H             |  34 ++-
+ src/include/usr/runtime/runtime.H                  |  22 +-
+ src/include/usr/vmmconst.h                         |   8 +-
+ src/usr/dump/dumpCollect.C                         | 318 ++++++++++++++++++++-
+ src/usr/hdat/hdatspiraH.H                          |   3 +-
+ src/usr/isteps/istep14/call_host_mpipl_service.C   |  17 +-
+ src/usr/isteps/istep21/call_host_runtime_setup.C   |  24 +-
+ src/usr/runtime/hdatservice.C                      |  69 ++++-
+ src/usr/runtime/hdatservice.H                      |  19 +-
+ src/usr/runtime/hdatstructs.H                      |   5 +-
+ .../common/xmltohb/attribute_types_hb.xml          |  62 ++++
+ .../targeting/common/xmltohb/target_types_hb.xml   |  12 +
+ 13 files changed, 674 insertions(+), 32 deletions(-)
+
+diff --git a/src/include/usr/dump/dumpif.H b/src/include/usr/dump/dumpif.H
+index 21bdde05ce..ea48a71fdc 100644
+--- a/src/include/usr/dump/dumpif.H
++++ b/src/include/usr/dump/dumpif.H
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2012,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -25,6 +25,8 @@
+ #ifndef __DUMPIF_H
+ #define __DUMPIF_H
+ 
++#include <hdat/hdat.H>
++
+ /** @file  dumpif.H
+  *  @brief Provides the external interfaces for dump.
+  *            - copy dump data from src to destination
+@@ -34,7 +36,6 @@
+ namespace DUMP
+ {
+ 
+-
+     /**
+      * @brief DUMP Message Types 
+      */
+@@ -85,7 +86,7 @@ namespace DUMP
+     #define DUMP_TEST_TABLE_SIZE (DUMP_TEST_SRC_MEM_SIZE +   \
+     DUMP_TEST_DST_MEM_SIZE + DUMP_TEST_RESULTS_MEM_SIZE)
+ 
+-       
++
+     #define DUMP_TEST_TABLE_END (DUMP_TEST_TABLE_START + DUMP_TEST_TABLE_SIZE)
+ 
+     // In addition to the dump table locations we have scratch data area that is
+@@ -118,6 +119,112 @@ namespace DUMP
+     } PACKED;
+ 
+ 
++    // Processor Dump Area table format
++    struct procDumpAreaEntry
++    {
++        uint32_t threadRegSize;        // Architected reg data size per thread
++        uint8_t  threadRegVersion;     // Data format version
++        uint8_t  reserved1[11];        // Reserved
++        uint64_t dstArrayAddr;         // Hypervisor passed destination addresss
++        uint8_t  reserved2[4];         // Reserved
++        uint32_t dstArraySize;         // Hypervisor passed destination size
++        uint64_t capArrayAddr;         // Actual destination address (filled by HB)
++        uint8_t  reserved3[4];         // Reserved
++        uint32_t capArraySize;         // Actual destination size (filled by HB)
++    } PACKED;
++
++    // Host formatted architected register data content (as per HDAT spec)
++    struct hostArchRegDataHdr
++    {
++        uint32_t pir;
++        uint8_t  coreState;
++        uint8_t  reserved[3];
++        HDAT::hdatHDIFDataArray_t iv_regArrayHdr;
++    } PACKED;
++
++    #define DUMP_ARCH_REG_TYPE_GPR	0x01
++    #define DUMP_ARCH_REG_TYPE_SPR	0x02
++
++    // Architected register data content entries
++    struct hostArchRegDataEntry
++    {
++        uint32_t regType;
++        uint32_t regNum;
++        uint64_t regVal;
++    } PACKED;
++
++    // Structure version used to share SPR/GPR register data between
++    // SBE and HB
++    #define REG_DUMP_SBE_HB_STRUCT_VER 0x1
++
++    // Structure version used to share SPR/GPR register data between
++    // HB and OPAL
++    #define REG_DUMP_HDAT_STRUCT_VER 0x1
++
++    /* Processor architected dump header. This header is per processor*/
++    struct sbeArchRegDumpProcHdr_t
++    {
++        uint8_t  ownerId;        /* FSP or SBE */
++        uint8_t  version;        /* Interface version number*/
++        uint16_t core_cnt;       /* Actual number of core whose register  data will be obtained */
++        uint16_t thread_cnt;     /* Total number of thread whose register data will be obtained */
++        uint16_t reg_cnt;        /* Max number of registers per thread */
++    } PACKED;   //8Bytes
++
++    // SBE formatted architected registers data
++    // (Common structure between SBE and Hostboot)
++    struct sbeArchRegDumpThreadHdr_t
++    {
++        uint32_t  pir;         // PIR value of thread corresponding to register
++        uint32_t  coreState:8; // State of core in which this thread is present
++        uint32_t  reserved:24;
++    } PACKED;
++
++    /**
++     *  @brief Defines the structure for storing the SPR/GPR register data
++     *
++     *  @var isRegDataValid   :'1'- Variable regVal will contain valid register 
++     *                         '0'- Variable regVal will contain fapiRC value
++     *
++     *  @var isLastReg        :'1' - Data is collected for the last SPR/GPR register
++     *                         '0' - otherwise.
++     *
++     *  @var isFfdcPresent    :'1' - Failing FAPI FFDC is shared
++     *                         '0' - Failing FFDC is not present
++     *
++     *  @var reserved0        :Reserved for future use and padding
++     *
++     *  @var regType          :Indicates type of register(SPR/GPR)
++     *
++     *  @var reserved1        :Reserved for future use and padding
++     *
++     *  @var regNum           :Address of the SPR/GPR register
++     *
++     *  @var regVal           :if isRegDataValid is '0'  - Valid Register value
++     *                            isRegDataValid is '!=0'- fapiRC value.
++     */
++    struct sbeArchRegDumpEntries_t
++    {
++        uint64_t isRegDataValid:1;
++        uint64_t isLastReg:1;
++        uint64_t isFfdcPresent:1;
++        uint64_t reseverd0:5;
++        uint64_t regType:8;
++        uint64_t reserved1:16;
++        uint64_t regNum:32;
++        uint64_t regVal;
++    } PACKED;
++
++    /**
++    * @brief This function copies the architected register data content
++    * from SBE reserved memory to hypervisor allocated memory
++    *
++    * @param[in]   void
++    *
++    * @return  errlHndl_t
++    */
++    errlHndl_t copyArchitectedRegs(void);
++
+     /**
+      * @brief This function is a wrapper function that calls
+      *   getHostDataPtrs to get the MDDT, MDST, MDRT pointers
+diff --git a/src/include/usr/dump/dumpreasoncodes.H b/src/include/usr/dump/dumpreasoncodes.H
+index fb959fdca1..eeeec126a6 100644
+--- a/src/include/usr/dump/dumpreasoncodes.H
++++ b/src/include/usr/dump/dumpreasoncodes.H
+@@ -5,7 +5,9 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* COPYRIGHT International Business Machines Corp. 2012,2014              */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
++/* [+] International Business Machines Corp.                              */
++/*                                                                        */
+ /*                                                                        */
+ /* Licensed under the Apache License, Version 2.0 (the "License");        */
+ /* you may not use this file except in compliance with the License.       */
+@@ -32,22 +34,28 @@ namespace DUMP
+         DUMP_COLLECT_INVALID         = 0x00,
+         DUMP_COLLECT                 = 0x01,
+         DUMP_SEND_MBOX_MSG           = 0x02,
++        DUMP_ARCH_REGS               = 0x03,
+     };
+ 
+     enum dumpReasonCode
+     {
+-        DUMP_INVALID_ADDR              = DUMP_COMP_ID | 0x01,
+-        DUMP_NO_HDAT_ADDR              = DUMP_COMP_ID | 0x02,
+-        DUMP_CANNOT_MAP                = DUMP_COMP_ID | 0x03,
+-        DUMP_CANNOT_UNMAP_SRC          = DUMP_COMP_ID | 0x04,
+-        DUMP_CANNOT_UNMAP_DEST         = DUMP_COMP_ID | 0x05,
+-        DUMP_CANNOT_UNMAP_RESULTS      = DUMP_COMP_ID | 0x06,
+-        DUMP_MDRT_INSUFFICIENT_SPACE   = DUMP_COMP_ID | 0x07,
+-        DUMP_MDST_INSUFFICIENT_SPACE   = DUMP_COMP_ID | 0x08,
+-        DUMP_MDDT_INSUFFICIENT_SPACE   = DUMP_COMP_ID | 0x09,
+-        DUMP_MDDT_INSUFFICIENT_ENTRIES = DUMP_COMP_ID | 0x0A,
+-        DUMP_MDST_INVALID_TABLE_SIZE   = DUMP_COMP_ID | 0x0B,
+-        DUMP_MDDT_INVALID_TABLE_SIZE   = DUMP_COMP_ID | 0x0C,
++        DUMP_INVALID_ADDR               = DUMP_COMP_ID | 0x01,
++        DUMP_NO_HDAT_ADDR               = DUMP_COMP_ID | 0x02,
++        DUMP_CANNOT_MAP                 = DUMP_COMP_ID | 0x03,
++        DUMP_CANNOT_UNMAP_SRC           = DUMP_COMP_ID | 0x04,
++        DUMP_CANNOT_UNMAP_DEST          = DUMP_COMP_ID | 0x05,
++        DUMP_CANNOT_UNMAP_RESULTS       = DUMP_COMP_ID | 0x06,
++        DUMP_MDRT_INSUFFICIENT_SPACE    = DUMP_COMP_ID | 0x07,
++        DUMP_MDST_INSUFFICIENT_SPACE    = DUMP_COMP_ID | 0x08,
++        DUMP_MDDT_INSUFFICIENT_SPACE    = DUMP_COMP_ID | 0x09,
++        DUMP_MDDT_INSUFFICIENT_ENTRIES  = DUMP_COMP_ID | 0x0A,
++        DUMP_MDST_INVALID_TABLE_SIZE    = DUMP_COMP_ID | 0x0B,
++        DUMP_MDDT_INVALID_TABLE_SIZE    = DUMP_COMP_ID | 0x0C,
++        DUMP_PDAT_INVALID_ADDR          = DUMP_COMP_ID | 0x0D,
++        DUMP_PDAT_CANNOT_UNMAP_SRC_ADDR = DUMP_COMP_ID | 0x0E,
++        DUMP_PDAT_CANNOT_UNMAP_DST_ADDR = DUMP_COMP_ID | 0x0F,
++        DUMP_PDAT_INSUFFICIENT_SPACE    = DUMP_COMP_ID | 0x10,
++        DUMP_PDAT_VERSION_MISMATCH      = DUMP_COMP_ID | 0x11,
+     };
+ };
+ 
+diff --git a/src/include/usr/runtime/runtime.H b/src/include/usr/runtime/runtime.H
+index b5e717e2b4..1e3bb13b55 100644
+--- a/src/include/usr/runtime/runtime.H
++++ b/src/include/usr/runtime/runtime.H
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2012,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -229,7 +229,8 @@ enum SectionId
+     HRMOR_STASH,          //< Pointer to address in reserved memory
+                           //  where PHYP can write HRMOR
+     CPU_CTRL,             // Spira-H CPU controls area
+-    LAST_SECTION = CPU_CTRL   //< Placeholder for arrays
++    PROC_DUMP_AREA_TBL,   //< Processor dump area table
++    LAST_SECTION = PROC_DUMP_AREA_TBL   //< Placeholder for arrays
+ };
+ 
+ /**
+@@ -305,6 +306,23 @@ void saveActualCount( SectionId i_id,
+  */
+ errlHndl_t writeActualCount( SectionId i_id );
+ 
++/**
++ * @brief  Write actual architected register detail to HDAT/SPIRAH
++ *
++ * @param[in] i_section        Chunk of data to update
++ * @param[in] threadRegSize    Architected reg data size per thread
++ * @param[in] threadRegVersion Data format version
++ * @param[in] capArrayAddr     Actual destination address
++ * @param[in] capArraySize     Actual destiantion size
++ *
++ * @return errlHndl_t  NULL on success
++ */
++errlHndl_t updateHostProcDumpActual( SectionId i_section,
++                                     uint32_t threadRegSize,
++                                     uint8_t threadRegVersion,
++                                     uint64_t capArrayAddr,
++                                     uint32_t capArraySize);
++
+ /**
+  * @brief  Use relocated payload base address
+  *
+diff --git a/src/include/usr/vmmconst.h b/src/include/usr/vmmconst.h
+index 3cf33e96f6..2d1a40b521 100644
+--- a/src/include/usr/vmmconst.h
++++ b/src/include/usr/vmmconst.h
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2011,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2011,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -177,7 +177,11 @@ enum BlockPriority
+ #define VMM_ALL_HOMER_OCC_MEMORY_SIZE \
+  (VMM_OCC_COMMON_SIZE + VMM_HOMER_REGION_SIZE)
+ 
+-/** Memory for Architected state (max 4 procs - 256KB Each) **/
++/**
++ * Memory for Architected state (max 4 procs - 256KB Each)
++ * XXX MPIPL depends on memory reservation layout. Any change in the
++ *     reservation order impact MPIPL (see copyArchitectedRegs()).
++ */
+ #define VMM_ARCH_REG_DATA_START_OFFSET VMM_OCC_COMMON_END_OFFSET
+ #define VMM_ARCH_REG_DATA_PER_PROC_SIZE_IN_KB 256
+ #define VMM_ARCH_REG_DATA_PER_PROC_SIZE \
+diff --git a/src/usr/dump/dumpCollect.C b/src/usr/dump/dumpCollect.C
+index 41b7d68e23..8e186c3117 100644
+--- a/src/usr/dump/dumpCollect.C
++++ b/src/usr/dump/dumpCollect.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2012,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -34,20 +34,23 @@
+ #include <errl/errlentry.H>
+ #include <errl/errlmanager.H>
+ #include <targeting/common/commontargeting.H>
++#include <targeting/common/utilFilter.H>
+ #include <runtime/runtime.H>
+ #include <util/align.H>
+ #include <sys/mm.h>
+ #include <dump/dumpif.H>
+ #include <util/utiltce.H>
++#include <isteps/mem_utils.H>
+ 
+-#include    <sys/msg.h>                     //  message Q's
+-#include    <mbox/mbox_queues.H>            //
++#include <sys/msg.h>                     //  message Q's
++#include <mbox/mbox_queues.H>            //
+ #include <kernel/vmmmgr.H>
+ 
+ // Trace definition
+ trace_desc_t* g_trac_dump = NULL;
+ TRAC_INIT(&g_trac_dump, "DUMP", 4*KILOBYTE);
+ 
++#define SBE_FFDC_SIZE 128
+ 
+ namespace DUMP
+ {
+@@ -131,6 +134,315 @@ void* getPhysAddr( uint64_t i_phypAddr )
+     return reinterpret_cast<void*>(ALIGN_PAGE_DOWN(phys_addr));
+ }
+ 
++///////////////////////////////////////////////////////////////////////////////
++///////////////////////////////////////////////////////////////////////////////
++errlHndl_t copyArchitectedRegs(void)
++{
++    TRACFCOMP(g_trac_dump, "copyArchitectedRegs - start ");
++    errlHndl_t l_err = nullptr;
++    int rc;
++    // Processor dump area address and size from HDAT
++    uint64_t procTableAddr = 0;
++    uint64_t procTableSize = 0;
++    // Pointer to architected register reserved memory
++    void *pSrcAddrBase = nullptr;
++    void *vMapSrcAddrBase = nullptr;
++    // Pointers to Hypervisor allocated memory for register data content
++    void *pDstAddrBase = nullptr;
++    void *vMapDstAddrBase = nullptr;
++    // Architected Reg Dump table struct pointers
++    procDumpAreaEntry *procTableEntry = nullptr;
++
++    do
++    {
++        // Get the PROC_DUMP_AREA_TBL address from SPIRAH
++        l_err = RUNTIME::get_host_data_section(RUNTIME::PROC_DUMP_AREA_TBL,
++                                               0,
++                                               procTableAddr,
++                                               procTableSize);
++        if (l_err)
++        {
++            // Got an errorlog back from get_host_data_sections
++            TRACFCOMP(g_trac_dump, "copyArchitectedRegs get_host_data_sections "
++                                   "for PDAT failed");
++            break;
++        }
++
++        // If the address or size is zero - error out
++        if ((procTableAddr == 0) || (procTableSize == 0))
++        {
++            // Invalid address or size
++            TRACFCOMP(g_trac_dump, "copyArchitectedRegs address or size invalid"
++                                   " for PDAT: addr =0x%X, size =0x%X,",
++                                   procTableAddr, procTableSize);
++            /*@
++             * @errortype
++             * @moduleid     DUMP::DUMP_ARCH_REGS
++             * @reasoncode   DUMP::DUMP_PDAT_INVALID_ADDR
++             * @userdata1    Table address returned
++             * @userdata2    Table size returned
++             * @devdesc      Invalid address and size returned from HDAT
++             */
++            l_err = new ERRORLOG::ErrlEntry(ERRORLOG::ERRL_SEV_UNRECOVERABLE,
++                                            DUMP_ARCH_REGS,
++                                            DUMP_PDAT_INVALID_ADDR,
++                                            procTableAddr,
++                                            procTableSize,
++                                           ERRORLOG::ErrlEntry::ADD_SW_CALLOUT);
++            break;
++        }
++
++        // Map processor dump area destination address to VA addresses
++        procTableEntry = reinterpret_cast<procDumpAreaEntry *>(procTableAddr); 
++        pDstAddrBase = getPhysAddr(procTableEntry->dstArrayAddr);
++        vMapDstAddrBase = mm_block_map(pDstAddrBase,
++                                       procTableEntry->dstArraySize);
++
++        // Map architected register reserved memory to VA addresses
++        uint64_t srcAddr = ISTEP::get_top_mem_addr() -
++                           VMM_ARCH_REG_DATA_SIZE_ALL_PROC -
++                     			   VMM_ALL_HOMER_OCC_MEMORY_SIZE;
++        pSrcAddrBase = reinterpret_cast<void * const>(srcAddr);
++        vMapSrcAddrBase = mm_block_map(pSrcAddrBase,
++                                       VMM_ARCH_REG_DATA_SIZE_ALL_PROC);
++
++        // Get list of functional processor chips, in MPIPL path we
++        // don't expect any deconfiguration
++        TARGETING::TargetHandleList procChips;
++        TARGETING::getAllChips( procChips, TARGETING::TYPE_PROC, true);
++
++
++        uint64_t dstTempAddr = reinterpret_cast<uint64_t>(vMapDstAddrBase);
++        procTableEntry->capArraySize = 0;
++        for (const auto & procChip: procChips)
++        {
++            uint8_t procNum = procChip->getAttr<TARGETING::ATTR_POSITION>(); 
++            // Base addresses w.r.t PROC positions. This is static here
++            // and used for reference below to calculate all other addresses
++            uint64_t procSrcAddr = (reinterpret_cast<uint64_t>(vMapSrcAddrBase)+
++                                    procNum * VMM_ARCH_REG_DATA_PER_PROC_SIZE);
++
++            sbeArchRegDumpProcHdr_t *sbeProcHdr =
++                       reinterpret_cast<sbeArchRegDumpProcHdr_t *>(procSrcAddr);
++            uint16_t threadCount = sbeProcHdr->thread_cnt;
++            uint16_t regCount = sbeProcHdr->reg_cnt;
++
++            //Validate the structure versions used by SBE and HB for sharing the
++            //data 
++            if( sbeProcHdr->version != REG_DUMP_SBE_HB_STRUCT_VER )
++            {
++                /*@
++                 * @errortype
++                 * @moduleid     DUMP::DUMP_ARCH_REGS
++                 * @reasoncode   DUMP::DUMP_PDAT_VERSION_MISMATCH
++                 * @userdata1    Structure version obtained from SBE
++                 * @userdata2    Structure version supported by HB
++                 * @devdesc      Mismatch between the version of structure
++                 *               supported by both SBE and HB.
++                 *               
++                 */
++                l_err = new ERRORLOG::ErrlEntry(
++                        ERRORLOG::ERRL_SEV_UNRECOVERABLE,
++                        DUMP_ARCH_REGS,
++                        DUMP_PDAT_VERSION_MISMATCH,
++                        sbeProcHdr->version,
++                        REG_DUMP_SBE_HB_STRUCT_VER,
++                        ERRORLOG::ErrlEntry::ADD_SW_CALLOUT);
++                errlCommit(l_err, DUMP_COMP_ID);
++                break;
++            }
++
++            //Update the data source address to point to the thread specific
++            //header data obtained by SBE
++            procSrcAddr = reinterpret_cast<uint64_t>(procSrcAddr +
++                                               sizeof(sbeArchRegDumpProcHdr_t));
++
++            procTableEntry->threadRegSize = sizeof(hostArchRegDataHdr)+
++                                      (regCount * sizeof(hostArchRegDataEntry));
++            procTableEntry->capArraySize = procTableEntry->capArraySize + 
++                                          (procTableEntry->threadRegSize
++                                           * threadCount);
++            if (procTableEntry->dstArraySize < procTableEntry->capArraySize)
++            {
++                /*@
++                 * @errortype
++                 * @moduleid     DUMP::DUMP_ARCH_REGS
++                 * @reasoncode   DUMP::DUMP_PDAT_INSUFFICIENT_SPACE
++                 * @userdata1    Hypervisor reserved memory size
++                 * @userdata2    Memory needed to copy architected 
++                 *               register data
++                 * @devdesc      Insufficient space to copy architected 
++                 *               registers
++                 */
++                l_err = new ERRORLOG::ErrlEntry(
++                        ERRORLOG::ERRL_SEV_UNRECOVERABLE,
++                        DUMP_ARCH_REGS,
++                        DUMP_PDAT_INSUFFICIENT_SPACE,
++                        procTableEntry->dstArraySize,
++                        procTableEntry->capArraySize,
++                        ERRORLOG::ErrlEntry::ADD_SW_CALLOUT);
++                errlCommit(l_err, DUMP_COMP_ID);
++                break;
++            }
++
++            // Total Number of Threads possible in one Proc
++            for(uint32_t idx = 0; idx < threadCount; idx++)
++            {
++                sbeArchRegDumpThreadHdr_t *sbeTdHdr = 
++                     reinterpret_cast<sbeArchRegDumpThreadHdr_t *>(procSrcAddr);
++
++                hostArchRegDataHdr *hostHdr = 
++                     reinterpret_cast<hostArchRegDataHdr *>(dstTempAddr);
++
++                // Fill thread header info
++                hostHdr->pir = sbeTdHdr->pir;
++                hostHdr->coreState = sbeTdHdr->coreState;
++                hostHdr->iv_regArrayHdr.hdatOffset =
++                                              sizeof(HDAT::hdatHDIFDataArray_t);
++                hostHdr->iv_regArrayHdr.hdatArrayCnt = regCount;
++                hostHdr->iv_regArrayHdr.hdatAllocSize = 
++                                              sizeof(hostArchRegDataEntry);
++                hostHdr->iv_regArrayHdr.hdatActSize = 
++                                              sizeof(hostArchRegDataEntry);
++
++                dstTempAddr = reinterpret_cast<uint64_t>(dstTempAddr + 
++                                                    sizeof(hostArchRegDataHdr));
++                //Update SBE data source address to point to the register data
++                //related to the current thread.
++                procSrcAddr = reinterpret_cast<uint64_t>(procSrcAddr + 
++                                             sizeof(sbeArchRegDumpThreadHdr_t));
++
++                //Validate the CoreState to find if the buffer has register data
++                if (sbeTdHdr->coreState != 0)
++                {
++                    //Bump up the destination address to skip the memory
++                    //required to store the register details.
++                    dstTempAddr = reinterpret_cast<uint64_t>(dstTempAddr +
++                                     (regCount * sizeof(hostArchRegDataEntry)));
++                    continue;
++                }
++
++    
++                // Fill register data
++                for(uint8_t cnt = 0; cnt < regCount; cnt++)
++                {
++                    sbeArchRegDumpEntries_t *sbeRegData =
++                       reinterpret_cast<sbeArchRegDumpEntries_t *>(procSrcAddr);
++                    hostArchRegDataEntry *hostRegData =
++                         reinterpret_cast<hostArchRegDataEntry *>(dstTempAddr);
++
++                    hostRegData->regType = sbeRegData->regType;
++                    hostRegData->regNum  = sbeRegData->regNum;
++                    hostRegData->regVal  = sbeRegData->regVal;
++
++                    dstTempAddr = reinterpret_cast<uint64_t>(dstTempAddr + 
++                                                  sizeof(hostArchRegDataEntry));
++                    //Update the SBE data source address to point to the
++                    //next register data related to the same thread.
++                    procSrcAddr = reinterpret_cast<uint64_t>(procSrcAddr + 
++                                               sizeof(sbeArchRegDumpEntries_t));
++                    if( sbeRegData->isLastReg )
++                    {
++                        //Skip the FFDC for now  
++                        if(sbeRegData->isFfdcPresent)
++                        {
++                            //Move the source address to skip theFFDC
++                            procSrcAddr = procSrcAddr + (sizeof(uint32_t)*SBE_FFDC_SIZE);
++                            //Adjust the destination address accordingly to skip
++                            //the mememory required for remaining registers
++                            uint32_t remaingRegCount = regCount - (cnt+1);
++                            if(remaingRegCount)
++                            {
++                                dstTempAddr = reinterpret_cast<uint64_t>(
++                                               dstTempAddr + (remaingRegCount * 
++                                               sizeof(hostArchRegDataEntry)));
++                            }
++                        }
++                        break;
++                    }
++                }
++            }
++        }
++        // Update Process Dump Area tuple
++        procTableEntry->threadRegVersion = REG_DUMP_HDAT_STRUCT_VER;
++        procTableEntry->capArrayAddr = procTableEntry->dstArrayAddr;
++ 
++        // Update the PDA Table Entries to Attribute to be fetched in istep 21
++        TARGETING::TargetService& targetService = TARGETING::targetService();
++        TARGETING::Target* l_sys = NULL;
++        targetService.getTopLevelTarget(l_sys);
++        l_sys->setAttr<TARGETING::ATTR_PDA_THREAD_REG_STATE_ENTRY_FORMAT>(
++                                              procTableEntry->threadRegVersion);
++        l_sys->setAttr<TARGETING::ATTR_PDA_THREAD_REG_ENTRY_SIZE>(
++                                                 procTableEntry->threadRegSize);
++        l_sys->setAttr<TARGETING::ATTR_PDA_CAPTURED_THREAD_REG_ARRAY_ADDR>(
++                                                  procTableEntry->capArrayAddr);
++        l_sys->setAttr<TARGETING::ATTR_PDA_CAPTURED_THREAD_REG_ARRAY_SIZE>(
++                                                  procTableEntry->capArraySize);
++
++    } while (0);
++
++    // Unmap destination memory
++    if (vMapDstAddrBase)
++    {
++        rc = mm_block_unmap(vMapDstAddrBase);
++        if (rc != 0)
++        {
++            /*@
++             * @errortype
++             * @moduleid     DUMP::DUMP_ARCH_REGS
++             * @reasoncode   DUMP::DUMP_PDAT_CANNOT_UNMAP_DST_ADDR
++             * @userdata1    VA of Destination Array Address for PDAT
++             * @userdata2    rc value from unmap
++             * @devdesc      Cannot unmap the PDAT Destinatin Array Addr
++             */
++            l_err = new ERRORLOG::ErrlEntry(
++                                  ERRORLOG::ERRL_SEV_UNRECOVERABLE,
++                                  DUMP_ARCH_REGS,
++                                  DUMP_PDAT_CANNOT_UNMAP_DST_ADDR,
++                                  (uint64_t)vMapDstAddrBase,
++                                  rc,
++                                  ERRORLOG::ErrlEntry::ADD_SW_CALLOUT);
++
++            // Commit the error and continue.
++            // Leave the devices unmapped?
++            errlCommit(l_err, DUMP_COMP_ID);
++            l_err = NULL;
++        }
++    }
++
++    // Unmap source memory
++    if(vMapSrcAddrBase)
++    {
++        rc = mm_block_unmap(vMapSrcAddrBase);
++        if (rc != 0)
++        {
++            /*@
++             * @errortype
++             * @moduleid     DUMP::DUMP_ARCH_REGS
++             * @reasoncode   DUMP::DUMP_PDAT_CANNOT_UNMAP_SRC_ADDR
++             * @userdata1    VA address of Source Array Address for PDAT
++             * @userdata2    rc value from unmap
++             * @devdesc      Cannot unmap the PDAT Source Array Address
++             */
++            l_err = new ERRORLOG::ErrlEntry(
++                                  ERRORLOG::ERRL_SEV_UNRECOVERABLE,
++                                  DUMP_ARCH_REGS,
++                                  DUMP_PDAT_CANNOT_UNMAP_SRC_ADDR,
++                                  (uint64_t)vMapSrcAddrBase,
++                                  rc,
++                                  ERRORLOG::ErrlEntry::ADD_SW_CALLOUT);
++
++            // Commit the error and continue.
++            // Leave the devices unmapped?
++            errlCommit(l_err, DUMP_COMP_ID);
++            l_err = NULL;
++        }
++    }
++    TRACFCOMP(g_trac_dump, "copyArchitectedRegs - end ");
++    return (l_err);
++}
++
+ ///////////////////////////////////////////////////////////////////////////////
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+diff --git a/src/usr/hdat/hdatspiraH.H b/src/usr/hdat/hdatspiraH.H
+index c0d336794f..23fd7fda43 100755
+--- a/src/usr/hdat/hdatspiraH.H
++++ b/src/usr/hdat/hdatspiraH.H
+@@ -74,8 +74,9 @@ enum hdatSpiraHDataAreas
+     HDAT_SEC_MS_DUMP_SRC_TBL   = 3,   // mainstore dump source table (can change at run time)
+     HDAT_SEC_MS_DUMP_DST_TBL   = 4,   // mainstore dump destination table (can change at run time)
+     HDAT_SEC_MS_DUMP_RSLT_TBL  = 5,   // mainstore dump results table
++    HDAT_SEC_PROC_DUMP_TBL     = 6,   // Processor dump area table
+ 
+-    HDAT_SPIRAH_DA_LAST        = 6
++    HDAT_SPIRAH_DA_LAST        = 7
+ };
+ 
+ /*-----------------------------------------------------------------------------*/
+diff --git a/src/usr/isteps/istep14/call_host_mpipl_service.C b/src/usr/isteps/istep14/call_host_mpipl_service.C
+index 7367e8e4b0..2d86599523 100644
+--- a/src/usr/isteps/istep14/call_host_mpipl_service.C
++++ b/src/usr/isteps/istep14/call_host_mpipl_service.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2015,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2015,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -28,6 +28,7 @@
+ 
+ #include <isteps/hwpisteperror.H>
+ #include <initservice/isteps_trace.H>
++#include <initservice/initserviceif.H>
+ 
+ //  targeting support
+ #include <targeting/common/commontargeting.H>
+@@ -157,6 +158,20 @@ void* call_host_mpipl_service (void *io_pArgs)
+ 
+             do
+             {
++                // In non-FSP based system SBE collects architected register
++                // data. Copy architected register data from Reserved Memory
++                // to hypervisor memory.
++                if ( !INITSERVICE::spBaseServicesEnabled() )
++                {
++                    l_err = DUMP::copyArchitectedRegs();
++                    if (l_err)
++                    {
++                        TRACFCOMP(ISTEPS_TRACE::g_trac_isteps_trace,
++                           "ERROR : returned from DUMP::copyArchitectedRegs()");
++                        break;
++                    }
++                }
++
+                 // send the start message
+                 l_errMsg = DUMP::sendMboxMsg(DUMP::DUMP_MSG_START_MSG_TYPE);
+ 
+diff --git a/src/usr/isteps/istep21/call_host_runtime_setup.C b/src/usr/isteps/istep21/call_host_runtime_setup.C
+index bde7a34d83..6becd4df22 100644
+--- a/src/usr/isteps/istep21/call_host_runtime_setup.C
++++ b/src/usr/isteps/istep21/call_host_runtime_setup.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2015,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2015,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -820,8 +820,8 @@ void* call_host_runtime_setup (void *io_pArgs)
+                 break;
+             }
+         }
+-        
+-        // Update the MDRT Count from Attribute
++
++        // Update the MDRT Count and PDA Table Entries from Attribute
+         TargetService& l_targetService = targetService();
+         Target* l_sys = nullptr;
+         l_targetService.getTopLevelTarget(l_sys);
+@@ -835,6 +835,24 @@ void* call_host_runtime_setup (void *io_pArgs)
+                 RUNTIME::saveActualCount( RUNTIME::MS_DUMP_RESULTS_TBL,
+                                           l_mdrtCount);
+             }
++
++            // Update PDA Table entries
++            if ( !INITSERVICE::spBaseServicesEnabled() )
++            {
++                uint32_t threadRegSize =
++                    l_sys->getAttr<TARGETING::ATTR_PDA_THREAD_REG_ENTRY_SIZE>();
++                uint8_t threadRegFormat =
++                    l_sys->getAttr<TARGETING::ATTR_PDA_THREAD_REG_STATE_ENTRY_FORMAT>();
++                uint64_t capThreadArrayAddr =
++                    l_sys->getAttr<TARGETING::ATTR_PDA_CAPTURED_THREAD_REG_ARRAY_ADDR>();
++                uint64_t capThreadArraySize =
++                    l_sys->getAttr<TARGETING::ATTR_PDA_CAPTURED_THREAD_REG_ARRAY_SIZE>();
++
++                // Ignore return value
++                RUNTIME::updateHostProcDumpActual( RUNTIME::PROC_DUMP_AREA_TBL,
++                                                   threadRegSize, threadRegFormat,
++                                                   capThreadArrayAddr, capThreadArraySize);
++           }
+         }
+ 
+         //Update the MDRT value (for MS Dump)
+diff --git a/src/usr/runtime/hdatservice.C b/src/usr/runtime/hdatservice.C
+index c9d8c36810..efc5ff4087 100644
+--- a/src/usr/runtime/hdatservice.C
++++ b/src/usr/runtime/hdatservice.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2012,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -39,6 +39,7 @@
+ #include "errlud_hdat.H"
+ #include <errl/errlmanager.H>
+ #include <targeting/attrrp.H>
++#include <dump/dumpif.H>
+ 
+ //#define REAL_HDAT_TEST
+ 
+@@ -912,6 +913,21 @@ errlHndl_t hdatService::getHostDataSection( SectionId i_section,
+             if( errhdl ) { break; }
+ 
+         }
++        // Processor Dump Area table
++        else if( RUNTIME::PROC_DUMP_AREA_TBL == i_section )
++        {
++            // Find the right tuple and verify it makes sense
++            errhdl = getAndCheckTuple(i_section, tuple);
++            if( errhdl ) { break; }
++            TRACUCOMP( g_trac_runtime, "PROCESSOR_DUMP_AREA_TBL tuple=%p", tuple );
++
++            //Note - there is no header for the Processor dump area table
++            //return the total allocated size since it is empty at first
++            o_dataSize = tuple->hdatAllocSize * tuple->hdatAllocCnt;
++            record_size = tuple->hdatAllocSize;
++            errhdl = getSpiraTupleVA(tuple, o_dataAddr);
++            if( errhdl ) { break; }
++        }
+         else if( RUNTIME::HRMOR_STASH == i_section )
+         {
+             //Look up the tuple that this section is located in
+@@ -1236,6 +1252,42 @@ errlHndl_t hdatService::findSpira( void )
+     return errhdl;
+ }
+ 
++errlHndl_t hdatService::updateHostProcDumpActual( SectionId i_section,
++                                                  uint32_t threadRegSize,
++                                                  uint8_t threadRegVersion,
++                                                  uint64_t capArrayAddr,
++                                                  uint32_t capArraySize)
++{
++    errlHndl_t errhdl = nullptr;
++    TRACFCOMP( g_trac_runtime,
++               "RUNTIME::updateHostProcDumpActual ( i_section=%d )", i_section);
++
++    do
++    {
++        uint64_t l_hostDataAddr = 0;
++        uint64_t l_hostDataSize = 0;
++        DUMP::procDumpAreaEntry *procDumpTable = nullptr;
++
++        // Get proc dump area ntuple address
++        errhdl = getHostDataSection(i_section, 0,
++                                    l_hostDataAddr, l_hostDataSize);
++        if (errhdl)
++        {
++            TRACFCOMP( g_trac_runtime, "updateHostProcDumpActual> Failed to "
++                       "get host data section (i_section=%d )", i_section);
++            break;
++        }
++
++        procDumpTable = reinterpret_cast<DUMP::procDumpAreaEntry *>(l_hostDataAddr);
++        procDumpTable->threadRegSize    = threadRegSize;
++        procDumpTable->threadRegVersion = threadRegVersion;
++        procDumpTable->capArrayAddr     = capArrayAddr;
++        procDumpTable->capArraySize     = capArraySize;
++    } while(0);
++
++    return errhdl;
++}
++
+ errlHndl_t hdatService::updateHostDataSectionActual( SectionId i_section,
+                                                      uint16_t i_count )
+ {
+@@ -1550,6 +1602,10 @@ errlHndl_t hdatService::getAndCheckTuple(const SectionId i_section,
+             l_spiraH = SPIRAH_MS_DUMP_RSLT_TBL;
+             l_spiraL = SPIRAL_MS_DUMP_RSLT_TBL;
+             break;
++        case RUNTIME::PROC_DUMP_AREA_TBL:
++            l_spiraH = SPIRAH_PROC_DUMP_TBL;
++            l_spiraL = SPIRAL_INVALID;
++            break;
+         case RUNTIME::HSVC_SYSTEM_DATA:
+         case RUNTIME::HSVC_NODE_DATA:
+             l_spiraS = SPIRAS_HSVC_DATA;
+@@ -1773,6 +1829,17 @@ errlHndl_t writeActualCount( SectionId i_id )
+     return Singleton<hdatService>::instance().writeActualCount(i_id);
+ }
+ 
++errlHndl_t updateHostProcDumpActual( SectionId i_section,
++                                     uint32_t threadRegSize,
++                                     uint8_t threadRegVersion,
++                                     uint64_t capArrayAddr,
++                                     uint32_t capArraySize)
++{
++    return Singleton<hdatService>::instance().updateHostProcDumpActual(i_section,
++                                                   threadRegSize, threadRegVersion,
++                                                   capArrayAddr, capArraySize);
++}
++
+ void useRelocatedPayloadAddr(bool val)
+ {
+     return Singleton<hdatService>::instance().useRelocatedPayloadAddr(val);
+diff --git a/src/usr/runtime/hdatservice.H b/src/usr/runtime/hdatservice.H
+index 44ff12a58f..67cdc44d21 100644
+--- a/src/usr/runtime/hdatservice.H
++++ b/src/usr/runtime/hdatservice.H
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2013,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2013,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -128,6 +128,23 @@ namespace RUNTIME
+         errlHndl_t updateHostDataSectionActual( SectionId i_section,
+                                                 uint16_t i_count );
+ 
++        /**
++         * @brief  Update Processor Dump area section.
++         *
++         * @param[in] i_section        Chunk of data to find
++         * @param[in] threadRegSize    Size of each thread register data
++         * @param[in] threadRegVersion Register data format version
++         * @param[in] capArrayAddr     Destination memory address
++         * @param[in] capArraySize     Destination memory size
++         *
++         * @return errlHndl_t          NULL on success
++         */
++        errlHndl_t updateHostProcDumpActual( SectionId i_section,
++                                             uint32_t threadRegSize,
++                                             uint8_t threadRegVersion,
++                                             uint64_t capArrayAddr,
++                                             uint32_t capArraySize);
++
+         /**
+          * @brief  Retrieve and log FFDC data relevant to a given section of
+          *         host data memory
+diff --git a/src/usr/runtime/hdatstructs.H b/src/usr/runtime/hdatstructs.H
+index 2f05a2a701..f21fa071f9 100644
+--- a/src/usr/runtime/hdatstructs.H
++++ b/src/usr/runtime/hdatstructs.H
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER HostBoot Project                                             */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2012,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2012,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -121,7 +121,8 @@ enum hdatSpiraHDataAreas
+     SPIRAH_MS_DUMP_SRC_TBL  = 3,    // mainstore dump source table
+     SPIRAH_MS_DUMP_DST_TBL  = 4,    // mainstore dump destination table
+     SPIRAH_MS_DUMP_RSLT_TBL = 5,    // mainstore dump results table
+-    SPIRAH_LAST             = 5
++    SPIRAH_PROC_DUMP_TBL    = 6,    // Proc reg dump area table
++    SPIRAH_LAST             = 6
+ };
+ 
+ /** @enum hdatSpiraSDataAreas
+diff --git a/src/usr/targeting/common/xmltohb/attribute_types_hb.xml b/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
+index c0cd729edf..728e1f1aba 100755
+--- a/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
++++ b/src/usr/targeting/common/xmltohb/attribute_types_hb.xml
+@@ -945,6 +945,68 @@
+     </hwpfToHbAttrMap>
+   </attribute>
+ 
++  <attribute>
++    <id>PDA_CAPTURED_THREAD_REG_ARRAY_ADDR</id>
++    <description>Processor Dump Area Table's captured thread
++        register state array address.
++    </description>
++    <simpleType>
++      <uint64_t>
++        <default>0</default>
++      </uint64_t>
++    </simpleType>
++    <persistency>volatile-zeroed</persistency>
++    <readable/>
++    <writeable/>
++    <hbOnly/>
++  </attribute>
++
++  <attribute>
++    <id>PDA_CAPTURED_THREAD_REG_ARRAY_SIZE</id>
++    <description>Processor Dump Area Table's captured thread
++        register state array size.
++    </description>
++    <simpleType>
++      <uint32_t>
++        <default>0</default>
++      </uint32_t>
++    </simpleType>
++    <persistency>volatile-zeroed</persistency>
++    <readable/>
++    <writeable/>
++    <hbOnly/>
++  </attribute>
++
++  <attribute>
++    <id>PDA_THREAD_REG_ENTRY_SIZE</id>
++    <description>Processor Dump Area Table's thread register entry size.
++    </description>
++    <simpleType>
++      <uint32_t>
++        <default>0</default>
++      </uint32_t>
++    </simpleType>
++    <persistency>volatile-zeroed</persistency>
++    <readable/>
++    <writeable/>
++    <hbOnly/>
++  </attribute>
++
++  <attribute>
++    <id>PDA_THREAD_REG_STATE_ENTRY_FORMAT</id>
++    <description>Processor Dump Area Table's thread entry format.
++    </description>
++    <simpleType>
++      <uint8_t>
++        <default>0</default>
++      </uint8_t>
++    </simpleType>
++    <persistency>volatile-zeroed</persistency>
++    <readable/>
++    <writeable/>
++    <hbOnly/>
++  </attribute>
++
+   <attribute>
+     <id>SBE_COMM_ADDR</id>
+     <description>
+diff --git a/src/usr/targeting/common/xmltohb/target_types_hb.xml b/src/usr/targeting/common/xmltohb/target_types_hb.xml
+index a9cd859be5..b44e388b4f 100644
+--- a/src/usr/targeting/common/xmltohb/target_types_hb.xml
++++ b/src/usr/targeting/common/xmltohb/target_types_hb.xml
+@@ -306,6 +306,18 @@
+     <attribute>
+       <id>OCC_COMMON_AREA_PHYS_ADDR</id>
+     </attribute>
++    <attribute>
++      <id>PDA_CAPTURED_THREAD_REG_ARRAY_ADDR</id>
++    </attribute>
++    <attribute>
++      <id>PDA_CAPTURED_THREAD_REG_ARRAY_SIZE</id>
++    </attribute>
++    <attribute>
++      <id>PDA_THREAD_REG_ENTRY_SIZE</id>
++    </attribute>
++    <attribute>
++      <id>PDA_THREAD_REG_STATE_ENTRY_FORMAT</id>
++    </attribute>
+   </targetTypeExtension>
+ 
+   <targetTypeExtension>
+-- 
+2.14.3
+
