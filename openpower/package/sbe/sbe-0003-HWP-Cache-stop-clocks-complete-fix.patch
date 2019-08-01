@@ -1,0 +1,34 @@
+From ea6aac4356886df25fd63b67118d265f5c07bf46 Mon Sep 17 00:00:00 2001
+From: Prasad Bg Ranganath <prasadbgr@in.ibm.com>
+Date: Fri, 15 Feb 2019 00:03:15 -0600
+Subject: [PATCH 3/3] HWP:Cache stop clocks complete fix
+
+CQ:SW455762
+Change-Id: Ia41ad689ebe7d1468855e8a9240a6701c372c435
+---
+ .../chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C      | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/import/chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C b/src/import/chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C
+index 3debf74a..472bf0bf 100644
+--- a/src/import/chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C
++++ b/src/import/chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C
+@@ -109,6 +109,15 @@ p9_hcd_cache_stopclocks(
+ 
+ 
+ 
++    //Check if EQ is powered off; if so, return
++    FAPI_TRY(fapi2::getScom(i_target, EQ_PPM_PFSNS, l_data64),
++             "Error reading data from EQ_PPM_PFSNS");
++
++    if(l_data64.getBit<EQ_PPM_PFSNS_VDD_PFETS_DISABLED_SENSE>())
++    {
++        return fapi2::current_err;
++    }
++
+     if(l_is_mpipl)
+     {
+         // PB_PURGE related SCOMs should be added to the beginning of
+-- 
+2.14.3
+

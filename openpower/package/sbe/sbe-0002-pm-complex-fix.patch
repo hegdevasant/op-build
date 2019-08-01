@@ -1,0 +1,206 @@
+commit 1410677b65e40e541560aa28918329bc3c2d2d35
+Author: Prasad Bg Ranganath <prasadbgr@in.ibm.com>
+Date:   Fri Feb 8 06:54:01 2019 -0600
+
+    PM HWP: Fix bug in stop clock procedure that effects mpipl
+    
+    CQ:SW455762
+    Change-Id: I43080c575355499cddf19b6ee094e23c94445e66
+    Reviewed-on: http://rchgit01.rchland.ibm.com/gerrit1/71581
+    Tested-by: Jenkins Server <pfd-jenkins+hostboot@us.ibm.com>
+    Reviewed-by: Prem Shanker Jha <premjha2@in.ibm.com>
+    Tested-by: PPE CI <ppe-ci+hostboot@us.ibm.com>
+    Tested-by: Hostboot CI <hostboot-ci+hostboot@us.ibm.com>
+    Tested-by: FSP CI Jenkins <fsp-CI-jenkins+hostboot@us.ibm.com>
+    Reviewed-by: Gregory S. Still <stillgs@us.ibm.com>
+    Reviewed-by: Jennifer A. Stofer <stofer@us.ibm.com>
+    Reviewed-on: http://rchgit01.rchland.ibm.com/gerrit1/71596
+    Reviewed-by: RAJA DAS <rajadas2@in.ibm.com>
+
+diff --git a/src/import/chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C b/src/import/chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C
+index 7f6fe9478..472bf0bf4 100644
+--- a/src/import/chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C
++++ b/src/import/chips/p9/procedures/hwp/cache/p9_hcd_cache_stopclocks.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER sbe Project                                                  */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2016,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2016,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -87,8 +87,10 @@ p9_hcd_cache_stopclocks(
+     uint32_t                                       l_loops1ms                  = 0;
+     uint32_t                                       l_scom_addr                 = 0;
+     uint8_t                                        l_attr_chip_unit_pos        = 0;
++    uint8_t                                        l_attr_chip_core_pos = 0;
+     uint8_t                                        l_attr_vdm_enabled           = 0;
+     uint8_t                                        l_is_mpipl                  = 0;
++    uint8_t                                        l_eq_pos;
+     const fapi2::Target<fapi2::TARGET_TYPE_SYSTEM> l_sys;
+     auto l_perv = i_target.getParent<fapi2::TARGET_TYPE_PERV>();
+     auto l_chip = i_target.getParent<fapi2::TARGET_TYPE_PROC_CHIP>();
+@@ -100,15 +102,12 @@ p9_hcd_cache_stopclocks(
+         (fapi2::TARGET_STATE_FUNCTIONAL);
+ 
+     FAPI_TRY(FAPI_ATTR_GET(fapi2::ATTR_IS_MPIPL, l_sys, l_is_mpipl));
++    FAPI_TRY(FAPI_ATTR_GET(fapi2::ATTR_CHIP_UNIT_POS, l_perv,
++                           l_attr_chip_unit_pos));
++    //  l_attr_chip_unit_pos = l_attr_chip_unit_pos - p9hcd::PERV_TO_QUAD_POS_OFFSET;
++    l_attr_chip_unit_pos = l_attr_chip_unit_pos - 0x10;
+ 
+-    //Check if EQ is powered off; if so, return
+-    FAPI_TRY(fapi2::getScom(i_target, EQ_PPM_PFSNS, l_data64),
+-             "Error reading data from EQ_PPM_PFSNS");
+ 
+-    if (l_data64.getBit<EQ_PPM_PFSNS_VDD_PFETS_DISABLED_SENSE>())
+-    {
+-        return fapi2::current_err;
+-    }
+ 
+     //Check if EQ is powered off; if so, return
+     FAPI_TRY(fapi2::getScom(i_target, EQ_PPM_PFSNS, l_data64),
+@@ -167,10 +166,6 @@ p9_hcd_cache_stopclocks(
+ 
+     FAPI_TRY(FAPI_ATTR_GET(fapi2::ATTR_VDM_ENABLED, l_chip,
+                            l_attr_vdm_enabled));
+-    FAPI_TRY(FAPI_ATTR_GET(fapi2::ATTR_CHIP_UNIT_POS, l_perv,
+-                           l_attr_chip_unit_pos));
+-    //  l_attr_chip_unit_pos = l_attr_chip_unit_pos - p9hcd::PERV_TO_QUAD_POS_OFFSET;
+-    l_attr_chip_unit_pos = l_attr_chip_unit_pos - 0x10;
+ 
+     if (i_select_regions & p9hcd::CLK_REGION_EX0_L3)
+     {
+@@ -238,7 +233,7 @@ p9_hcd_cache_stopclocks(
+     if (l_rc)
+     {
+         FAPI_INF("Clock controller of this cache chiplet is inaccessible, return");
+-        goto fapi_try_exit;
++        goto qssr_update;
+     }
+ 
+     FAPI_DBG("Check PERV clock status for access to CME via CLOCK_STAT[4]");
+@@ -360,11 +355,11 @@ p9_hcd_cache_stopclocks(
+     {
+         FAPI_TRY(FAPI_ATTR_GET(fapi2::ATTR_CHIP_UNIT_POS,
+                                it.getParent<fapi2::TARGET_TYPE_PERV>(),
+-                               l_attr_chip_unit_pos));
++                               l_attr_chip_core_pos));
+         FAPI_DBG("Assert core[%d] PCB Mux Disable via C_SLAVE_CONFIG[7]",
+-                 (l_attr_chip_unit_pos - p9hcd::PERV_TO_CORE_POS_OFFSET));
++                 (l_attr_chip_core_pos - p9hcd::PERV_TO_CORE_POS_OFFSET));
+         l_scom_addr = (C_SLAVE_CONFIG_REG + (0x1000000 *
+-                                             (l_attr_chip_unit_pos - p9hcd::PERV_TO_CORE_POS_OFFSET)));
++                                             (l_attr_chip_core_pos - p9hcd::PERV_TO_CORE_POS_OFFSET)));
+         FAPI_TRY(getScom(l_chip, l_scom_addr, l_data64));
+         FAPI_TRY(putScom(l_chip, l_scom_addr, DATA_SET(7)));
+     }
+@@ -396,13 +391,15 @@ p9_hcd_cache_stopclocks(
+         FAPI_TRY(putScom(i_target, EQ_QPPM_QCCR_WCLEAR, MASK_SET(4)));
+     }
+ 
++qssr_update:
+     // -------------------------------
+     // Update QSSR and STOP history
+     // -------------------------------
+-
++    l_eq_pos = l_attr_chip_unit_pos + 14;
++    l_data64.flush<0>();
++    l_data64.setBit(l_eq_pos);
+     FAPI_DBG("Set cache as stopped in QSSR");
+-    FAPI_TRY(putScom(l_chip, PU_OCB_OCI_QSSR_OR,
+-                     BIT64(l_attr_chip_unit_pos + 14)));
++    FAPI_TRY(putScom(l_chip, PU_OCB_OCI_QSSR_OR, l_data64));
+ 
+     FAPI_DBG("Set cache as stopped in STOP history register");
+     FAPI_TRY(putScom(i_target, EQ_PPM_SSHSRC, BIT64(0)));
+diff --git a/src/import/chips/p9/procedures/hwp/cache/p9_hcd_l2_stopclocks.C b/src/import/chips/p9/procedures/hwp/cache/p9_hcd_l2_stopclocks.C
+index 1951007dd..9842a8dd5 100644
+--- a/src/import/chips/p9/procedures/hwp/cache/p9_hcd_l2_stopclocks.C
++++ b/src/import/chips/p9/procedures/hwp/cache/p9_hcd_l2_stopclocks.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER sbe Project                                                  */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2016,2017                        */
++/* Contributors Listed Below - COPYRIGHT 2016,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -74,6 +74,7 @@ p9_hcd_l2_stopclocks(
+     uint32_t                                    l_loops1ms;
+     uint64_t                                    l_region_clock = 0;
+     uint64_t                                    l_l2sync_clock = 0;
++    uint8_t                                     ex_pos;
+     uint64_t                                    l_l2mask_pscom = 0;
+     uint8_t                                     l_attr_chip_unit_pos = 0;
+     auto l_perv = i_target.getParent<fapi2::TARGET_TYPE_PERV>();
+@@ -117,7 +118,7 @@ p9_hcd_l2_stopclocks(
+     if (l_rc)
+     {
+         FAPI_INF("Clock controller of this cache chiplet is inaccessible, return");
+-        goto fapi_try_exit;
++        goto qssr_update;
+     }
+ 
+     FAPI_DBG("Check PERV clock status for access to CME via CLOCK_STAT[4]");
+@@ -212,10 +213,22 @@ p9_hcd_l2_stopclocks(
+     // Update QSSR
+     // -------------------------------
+ 
++qssr_update:
+     FAPI_DBG("Set EX as stopped in QSSR");
+-    FAPI_TRY(putScom(l_chip, PU_OCB_OCI_QSSR_OR,
+-                     ((uint64_t)i_select_ex << SHIFT64((l_attr_chip_unit_pos << 1) + 1))));
++    ex_pos = l_attr_chip_unit_pos << 1;
++    l_data64.flush<0>();
+ 
++    if (i_select_ex & p9hcd::EVEN_EX)
++    {
++        l_data64.setBit(ex_pos);
++    }
++
++    if (i_select_ex & p9hcd::ODD_EX)
++    {
++        l_data64.setBit(ex_pos + 1);
++    }
++
++    FAPI_TRY(putScom(l_chip, PU_OCB_OCI_QSSR_OR, l_data64));
+ fapi_try_exit:
+ 
+     FAPI_INF("<<p9_hcd_l2_stopclocks");
+diff --git a/src/import/chips/p9/procedures/hwp/core/p9_hcd_core_stopclocks.C b/src/import/chips/p9/procedures/hwp/core/p9_hcd_core_stopclocks.C
+index 04d06121e..5f11e734f 100644
+--- a/src/import/chips/p9/procedures/hwp/core/p9_hcd_core_stopclocks.C
++++ b/src/import/chips/p9/procedures/hwp/core/p9_hcd_core_stopclocks.C
+@@ -5,7 +5,7 @@
+ /*                                                                        */
+ /* OpenPOWER sbe Project                                                  */
+ /*                                                                        */
+-/* Contributors Listed Below - COPYRIGHT 2016,2018                        */
++/* Contributors Listed Below - COPYRIGHT 2016,2019                        */
+ /* [+] International Business Machines Corp.                              */
+ /*                                                                        */
+ /*                                                                        */
+@@ -110,15 +110,19 @@ p9_hcd_core_stopclocks(
+ 
+     if (l_data64.getBit<EQ_PPM_PFSNS_VDD_PFETS_DISABLED_SENSE>())
+     {
++        FAPI_DBG("Set core as stopped in STOP history register");
++        FAPI_TRY(putScom(i_target, C_PPM_SSHSRC, BIT64(0)));
+         return fapi2::current_err;
+     }
+ 
+     //Check if core is powered off; if so, return
+     FAPI_TRY(fapi2::getScom(i_target, C_PPM_PFSNS, l_data64),
+-             "Error reading data from EQ_PPM_PFSNS");
++             "Error reading data from C_PPM_PFSNS");
+ 
+     if (l_data64.getBit<C_PPM_PFSNS_VDD_PFETS_DISABLED_SENSE>())
+     {
++        FAPI_DBG("Set core as stopped in STOP history register");
++        FAPI_TRY(putScom(i_target, C_PPM_SSHSRC, BIT64(0)));
+         return fapi2::current_err;
+     }
+ 
