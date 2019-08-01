@@ -1,0 +1,43 @@
+powerpc/fadump: define an empty fadump_cleanup()
+
+From: Christophe Leroy <christophe.leroy@c-s.fr>
+
+To avoid #ifdefs, define an static inline fadump_cleanup() function
+when CONFIG_FADUMP is not selected
+
+Signed-off-by: Christophe Leroy <christophe.leroy@c-s.fr>
+Signed-off-by: Michael Ellerman <mpe@ellerman.id.au>
+---
+ arch/powerpc/include/asm/fadump.h  |    1 +
+ arch/powerpc/kernel/setup-common.c |    2 --
+ 2 files changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/arch/powerpc/include/asm/fadump.h b/arch/powerpc/include/asm/fadump.h
+index 188776b..e2099c0 100644
+--- a/arch/powerpc/include/asm/fadump.h
++++ b/arch/powerpc/include/asm/fadump.h
+@@ -219,5 +219,6 @@ extern void fadump_cleanup(void);
+ static inline int is_fadump_active(void) { return 0; }
+ static inline int should_fadump_crash(void) { return 0; }
+ static inline void crash_fadump(struct pt_regs *regs, const char *str) { }
++static inline void fadump_cleanup(void) { }
+ #endif
+ #endif
+diff --git a/arch/powerpc/kernel/setup-common.c b/arch/powerpc/kernel/setup-common.c
+index 93fa0c9..1ed086a 100644
+--- a/arch/powerpc/kernel/setup-common.c
++++ b/arch/powerpc/kernel/setup-common.c
+@@ -133,13 +133,11 @@ int crashing_cpu = -1;
+ /* also used by kexec */
+ void machine_shutdown(void)
+ {
+-#ifdef CONFIG_FA_DUMP
+ 	/*
+ 	 * if fadump is active, cleanup the fadump registration before we
+ 	 * shutdown.
+ 	 */
+ 	fadump_cleanup();
+-#endif
+ 
+ 	if (ppc_md.machine_shutdown)
+ 		ppc_md.machine_shutdown();

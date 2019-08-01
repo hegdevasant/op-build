@@ -1,0 +1,75 @@
+powernv/opalcore: provide an option to invalidate /sys/firmware/opal/core file
+
+From: Hari Bathini <hbathini@linux.ibm.com>
+
+Writing '1' to /sys/kernel/fadump_release_opalcore would release the
+memory held by kernel in exporting /sys/firmware/opal/core file.
+
+Signed-off-by: Hari Bathini <hbathini@linux.ibm.com>
+---
+ arch/powerpc/platforms/powernv/opal-core.c |   38 ++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/arch/powerpc/platforms/powernv/opal-core.c b/arch/powerpc/platforms/powernv/opal-core.c
+index 55bea53..9663d70 100644
+--- a/arch/powerpc/platforms/powernv/opal-core.c
++++ b/arch/powerpc/platforms/powernv/opal-core.c
+@@ -19,6 +19,8 @@
+ #include <linux/proc_fs.h>
+ #include <linux/elf.h>
+ #include <linux/elfcore.h>
++#include <linux/kobject.h>
++#include <linux/sysfs.h>
+ #include <linux/slab.h>
+ #include <linux/crash_core.h>
+ #include <linux/of.h>
+@@ -562,6 +564,36 @@ static void opalcore_cleanup(void)
+ }
+ __exitcall(opalcore_cleanup);
+ 
++static ssize_t fadump_release_opalcore_store(struct kobject *kobj,
++					     struct kobj_attribute *attr,
++					     const char *buf, size_t count)
++{
++	int input = -1;
++
++	if (kstrtoint(buf, 0, &input))
++		return -EINVAL;
++
++	if (input == 1) {
++		if (oc_conf == NULL) {
++			pr_err("'/sys/firmware/opal/core' file not accessible!\n");
++			return -EPERM;
++		}
++
++		/*
++		 * Take away '/sys/firmware/opal/core' and release all memory
++		 * used for exporting this file.
++		 */
++		opalcore_cleanup();
++	} else
++		return -EINVAL;
++
++	return count;
++}
++
++static struct kobj_attribute opalcore_rel_attr = __ATTR(fadump_release_opalcore,
++						0200, NULL,
++						fadump_release_opalcore_store);
++
+ /* Init function for opalcore module. */
+ static int __init opalcore_init(void)
+ {
+@@ -594,6 +626,12 @@ static int __init opalcore_init(void)
+ 		return rc;
+ 	}
+ 
++	rc = sysfs_create_file(kernel_kobj, &opalcore_rel_attr.attr);
++	if (rc) {
++		pr_warn("unable to create sysfs file fadump_release_opalcore (%d)\n",
++			rc);
++	}
++
+ 	return 0;
+ }
+ fs_initcall(opalcore_init);

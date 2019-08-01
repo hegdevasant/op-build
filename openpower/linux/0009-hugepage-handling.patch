@@ -1,0 +1,51 @@
+powerpc: reserve memory for capture kernel after hugepages init
+
+From: Hari Bathini <hbathini@linux.ibm.com>
+
+Sometimes, memory reservation for KDump/FADump can overlap with memory
+marked for hugepages. This overlap leads to error, hang in KDump case
+and copy error reported by f/w in case of FADump, while trying to
+capture dump. Report error while setting up memory for the capture
+kernel instead of running into issues while capturing dump, by moving
+KDump/FADump reservation below MMU early init and failing gracefully
+when hugepages memory overlaps with capture kernel memory.
+
+Signed-off-by: Hari Bathini <hbathini@linux.ibm.com>
+---
+ arch/powerpc/kernel/prom.c |   16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/arch/powerpc/kernel/prom.c b/arch/powerpc/kernel/prom.c
+index c4d7078..c22d9d9 100644
+--- a/arch/powerpc/kernel/prom.c
++++ b/arch/powerpc/kernel/prom.c
+@@ -732,14 +732,6 @@ void __init early_init_devtree(void *params)
+ 	if (PHYSICAL_START > MEMORY_START)
+ 		memblock_reserve(MEMORY_START, 0x8000);
+ 	reserve_kdump_trampoline();
+-#ifdef CONFIG_FA_DUMP
+-	/*
+-	 * If we fail to reserve memory for firmware-assisted dump then
+-	 * fallback to kexec based kdump.
+-	 */
+-	if (fadump_reserve_mem() == 0)
+-#endif
+-		reserve_crashkernel();
+ 	early_reserve_mem();
+ 
+ 	/* Ensure that total memory size is page-aligned. */
+@@ -778,6 +770,14 @@ void __init early_init_devtree(void *params)
+ #endif
+ 
+ 	mmu_early_init_devtree();
++#ifdef CONFIG_FA_DUMP
++	/*
++	 * If we fail to reserve memory for firmware-assisted dump then
++	 * fallback to kexec based kdump.
++	 */
++	if (fadump_reserve_mem() == 0)
++#endif
++		reserve_crashkernel();
+ 
+ #ifdef CONFIG_PPC_POWERNV
+ 	/* Scan and build the list of machine check recoverable ranges */

@@ -1,0 +1,412 @@
+fadump debug prints
+
+From: Hari Bathini <hbathini@linux.ibm.com>
+
+Signed-off-by: Hari Bathini <hbathini@linux.ibm.com>
+---
+ arch/powerpc/kernel/fadump.c                 |   42 +++++++++++++-------------
+ arch/powerpc/platforms/powernv/opal-core.c   |   20 ++++++------
+ arch/powerpc/platforms/powernv/opal-fadump.c |   34 +++++++++++----------
+ arch/powerpc/platforms/pseries/rtas-fadump.c |   16 +++++-----
+ 4 files changed, 56 insertions(+), 56 deletions(-)
+
+diff --git a/arch/powerpc/kernel/fadump.c b/arch/powerpc/kernel/fadump.c
+index bcd4860..d6eb148 100644
+--- a/arch/powerpc/kernel/fadump.c
++++ b/arch/powerpc/kernel/fadump.c
+@@ -257,24 +257,24 @@ static void fadump_show_config(void)
+ {
+ 	int i;
+ 
+-	pr_debug("Support for firmware-assisted dump (fadump): %s\n",
++	pr_err("Support for firmware-assisted dump (fadump): %s\n",
+ 			(fw_dump.fadump_supported ? "present" : "no support"));
+ 
+ 	if (!fw_dump.fadump_supported)
+ 		return;
+ 
+-	pr_debug("Fadump enabled    : %s\n",
++	pr_err("Fadump enabled    : %s\n",
+ 				(fw_dump.fadump_enabled ? "yes" : "no"));
+-	pr_debug("Dump Active       : %s\n",
++	pr_err("Dump Active       : %s\n",
+ 				(fw_dump.dump_active ? "yes" : "no"));
+-	pr_debug("Dump section sizes:\n");
+-	pr_debug("    CPU state data size: %lx\n", fw_dump.cpu_state_data_size);
+-	pr_debug("    HPTE region size   : %lx\n", fw_dump.hpte_region_size);
+-	pr_debug("    Boot memory size   : %lx\n", fw_dump.boot_memory_size);
+-	pr_debug("    Boot memory top    : %lx\n", fw_dump.boot_mem_top);
+-	pr_debug("Boot meory regions count : %lx\n", fw_dump.boot_mem_regs_cnt);
++	pr_err("Dump section sizes:\n");
++	pr_err("    CPU state data size: %lx\n", fw_dump.cpu_state_data_size);
++	pr_err("    HPTE region size   : %lx\n", fw_dump.hpte_region_size);
++	pr_err("    Boot memory size   : %lx\n", fw_dump.boot_memory_size);
++	pr_err("    Boot memory top    : %lx\n", fw_dump.boot_mem_top);
++	pr_err("Boot meory regions count : %lx\n", fw_dump.boot_mem_regs_cnt);
+ 	for (i = 0; i < fw_dump.boot_mem_regs_cnt; i++) {
+-		pr_debug("%d. base = %lx, size = %lx\n", (i+1),
++		pr_err("%d. base = %lx, size = %lx\n", (i+1),
+ 			 fw_dump.boot_mem_addr[i], fw_dump.boot_mem_size[i]);
+ 	}
+ }
+@@ -385,7 +385,7 @@ static int __init add_boot_mem_region(unsigned long rstart,
+ 		return 0;
+ 	}
+ 
+-	pr_debug("Added boot memory range[%d] [%#016lx-%#016lx)\n",
++	pr_err("Added boot memory range[%d] [%#016lx-%#016lx)\n",
+ 		 i, rstart, (rstart + rsize));
+ 	fw_dump.boot_mem_addr[i] = rstart;
+ 	fw_dump.boot_mem_size[i] = rsize;
+@@ -548,7 +548,7 @@ int __init fadump_reserve_mem(void)
+ 		 */
+ 		fadump_reserve_crash_area(base);
+ 
+-		pr_debug("fadumphdr_addr = %#016lx\n", fw_dump.fadumphdr_addr);
++		pr_err("fadumphdr_addr = %#016lx\n", fw_dump.fadumphdr_addr);
+ 		fw_dump.reserve_dump_area_start = base;
+ 	} else {
+ 		/*
+@@ -691,7 +691,7 @@ static int allocate_crash_memory_ranges(void)
+ 	u64 new_size;
+ 
+ 	new_size = crash_memory_ranges_size + PAGE_SIZE;
+-	pr_debug("Allocating %llu bytes of memory for crash memory ranges\n",
++	pr_err("Allocating %llu bytes of memory for crash memory ranges\n",
+ 		 new_size);
+ 
+ 	new_array = krealloc(crash_memory_ranges, new_size, GFP_KERNEL);
+@@ -744,7 +744,7 @@ static inline int fadump_add_crash_memory(unsigned long long base,
+ 	}
+ 
+ 	crash_memory_ranges[crash_mem_ranges - 1].size = (end - start);
+-	pr_debug("crash_memory_range[%d] [%#016llx-%#016llx], %#llx bytes\n",
++	pr_err("crash_memory_range[%d] [%#016llx-%#016llx], %#llx bytes\n",
+ 		(crash_mem_ranges - 1), start, end - 1, (end - start));
+ 	return 0;
+ }
+@@ -819,7 +819,7 @@ static int fadump_setup_crash_memory_ranges(void)
+ 	unsigned long long start, end, offset;
+ 	int i, ret;
+ 
+-	pr_debug("Setup crash memory ranges.\n");
++	pr_err("Setup crash memory ranges.\n");
+ 	crash_mem_ranges = 0;
+ 	offset = fw_dump.boot_mem_top;
+ 
+@@ -888,7 +888,7 @@ static inline unsigned long fadump_relocate(unsigned long paddr)
+ 		rlast = rend;
+ 	}
+ 
+-	pr_debug("vmcoreinfo: paddr = 0x%lx, raddr = 0x%lx\n", paddr, raddr);
++	pr_err("vmcoreinfo: paddr = 0x%lx, raddr = 0x%lx\n", paddr, raddr);
+ 	return raddr;
+ }
+ 
+@@ -1024,11 +1024,11 @@ static int register_fadump(void)
+ 	addr = init_fadump_header(addr);
+ 	vaddr = __va(addr);
+ 
+-	pr_debug("Creating ELF core headers at %#016lx\n", addr);
++	pr_err("Creating ELF core headers at %#016lx\n", addr);
+ 	fadump_create_elfcore_headers(vaddr);
+ 
+ 	/* register the future kernel dump with firmware. */
+-	pr_debug("Registering for firmware-assisted kernel dump...\n");
++	pr_err("Registering for firmware-assisted kernel dump...\n");
+ 	return fw_dump.ops->register_fadump(&fw_dump);
+ }
+ 
+@@ -1036,7 +1036,7 @@ void fadump_cleanup(void)
+ {
+ 	/* Invalidate the registration only if dump is active. */
+ 	if (fw_dump.dump_active) {
+-		pr_debug("Invalidating firmware-assisted dump registration\n");
++		pr_err("Invalidating firmware-assisted dump registration\n");
+ 		fw_dump.ops->invalidate_fadump(&fw_dump);
+ 	} else if (fw_dump.dump_registered) {
+ 		/* Un-register Firmware-assisted dump if it was registered. */
+@@ -1241,7 +1241,7 @@ static ssize_t fadump_register_store(struct kobject *kobj,
+ 		}
+ 
+ 		/* Un-register Firmware-assisted dump */
+-		pr_debug("Un-register firmware-assisted dump\n");
++		pr_err("Un-register firmware-assisted dump\n");
+ 		fw_dump.ops->unregister_fadump(&fw_dump);
+ 		break;
+ 	case 1:
+@@ -1382,7 +1382,7 @@ int __init fadump_reserve_mem(void)
+ 		pr_info("Preserving crash data for processing in next boot.\n");
+ 		fadump_reserve_crash_area(PAGE_ALIGN(fw_dump.boot_mem_top));
+ 	} else
+-		pr_debug("FADump-aware kernel..\n");
++		pr_err("FADump-aware kernel..\n");
+ 
+ 	return 1;
+ }
+diff --git a/arch/powerpc/platforms/powernv/opal-core.c b/arch/powerpc/platforms/powernv/opal-core.c
+index 9663d70..125744d 100644
+--- a/arch/powerpc/platforms/powernv/opal-core.c
++++ b/arch/powerpc/platforms/powernv/opal-core.c
+@@ -252,9 +252,9 @@ static Elf64_Word * __init opalcore_append_cpu_notes(Elf64_Word *buf)
+ 	reg_esize = be32_to_cpu(thdr->esize);
+ 	regs_cnt  = be32_to_cpu(thdr->ecnt);
+ 
+-	pr_debug("--------CPU State Data------------\n");
+-	pr_debug("NumCpus     : %u\n", oc_conf->num_cpus);
+-	pr_debug("\tOffset: %u, Entry size: %u, Cnt: %u\n",
++	pr_err("--------CPU State Data------------\n");
++	pr_err("NumCpus     : %u\n", oc_conf->num_cpus);
++	pr_err("\tOffset: %u, Entry size: %u, Cnt: %u\n",
+ 		 regs_offset, reg_esize, regs_cnt);
+ 
+ 	/*
+@@ -269,7 +269,7 @@ static Elf64_Word * __init opalcore_append_cpu_notes(Elf64_Word *buf)
+ 		thdr = (struct hdat_fadump_thread_hdr *)bufp;
+ 		thread_pir = be32_to_cpu(thdr->pir);
+ 
+-		pr_debug("%04d) PIR: 0x%x, core state: 0x%02x\n",
++		pr_err("%04d) PIR: 0x%x, core state: 0x%02x\n",
+ 			 (i + 1), thread_pir, thdr->core_state);
+ 
+ 		/*
+@@ -284,7 +284,7 @@ static Elf64_Word * __init opalcore_append_cpu_notes(Elf64_Word *buf)
+ 		opal_fadump_read_regs((bufp + regs_offset), regs_cnt,
+ 				      reg_esize, false, &regs);
+ 
+-		pr_debug("PIR 0x%x - R1 : 0x%llx, NIP : 0x%llx\n", thread_pir,
++		pr_err("PIR 0x%x - R1 : 0x%llx, NIP : 0x%llx\n", thread_pir,
+ 			 be64_to_cpu(regs.gpr[1]), be64_to_cpu(regs.nip));
+ 		fill_prstatus(&prstatus, thread_pir, &regs);
+ 
+@@ -348,7 +348,7 @@ static int __init create_opalcore(void)
+ 		return -ENOMEM;
+ 	}
+ 
+-	pr_debug("opalcorebuf = 0x%lx\n", (unsigned long)oc_conf->opalcorebuf);
++	pr_err("opalcorebuf = 0x%lx\n", (unsigned long)oc_conf->opalcorebuf);
+ 
+ 	count = 1 << order;
+ 	page = virt_to_page(oc_conf->opalcorebuf);
+@@ -360,10 +360,10 @@ static int __init create_opalcore(void)
+ 	if (dn) {
+ 		ret = of_property_read_u64(dn, "opal-base-address",
+ 					   &opal_base_addr);
+-		pr_debug("opal-base-address: %llx\n", opal_base_addr);
++		pr_err("opal-base-address: %llx\n", opal_base_addr);
+ 		ret |= of_property_read_u64(dn, "opal-boot-address",
+ 					    &opal_boot_entry);
+-		pr_debug("opal-boot-address: %llx\n", opal_boot_entry);
++		pr_err("opal-boot-address: %llx\n", opal_boot_entry);
+ 	}
+ 	if (!dn || ret)
+ 		pr_warn("WARNING: Failed to read OPAL base & entry values\n");
+@@ -475,7 +475,7 @@ static void __init opalcore_config_init(void)
+ 	}
+ 
+ 	addr = be64_to_cpu(addr);
+-	pr_debug("OPAL metadata addr: %llx\n", addr);
++	pr_err("OPAL metadata addr: %llx\n", addr);
+ 	opalc_metadata = __va(addr);
+ 	if (opalc_metadata->version != MPIPL_FADUMP_VERSION) {
+ 		pr_err("OPAL metadata version (%u) not supported by kernel!\n",
+@@ -490,7 +490,7 @@ static void __init opalcore_config_init(void)
+ 	}
+ 
+ 	addr = be64_to_cpu(addr);
+-	pr_debug("CPU metadata addr: %llx\n", addr);
++	pr_err("CPU metadata addr: %llx\n", addr);
+ 	opalc_cpu_metadata = __va(addr);
+ 	cpu_data_version = be32_to_cpu(opalc_cpu_metadata->cpu_data_version);
+ 	if (cpu_data_version != HDAT_FADUMP_CPU_DATA_VERSION) {
+diff --git a/arch/powerpc/platforms/powernv/opal-fadump.c b/arch/powerpc/platforms/powernv/opal-fadump.c
+index 618186e..93b39ab 100644
+--- a/arch/powerpc/platforms/powernv/opal-fadump.c
++++ b/arch/powerpc/platforms/powernv/opal-fadump.c
+@@ -63,7 +63,7 @@ int __init opal_fadump_dt_scan(struct fw_dump *fadump_conf, ulong node)
+ 		 * above this address for processing crashdump.
+ 		 */
+ 		fadump_conf->boot_mem_top = be64_to_cpu(addr);
+-		pr_debug("Preserve everything above %lx\n",
++		pr_err("Preserve everything above %lx\n",
+ 			 fadump_conf->boot_mem_top);
+ 
+ 		pr_info("Firmware-assisted dump is active.\n");
+@@ -85,21 +85,21 @@ extern bool kernel_initiated;
+ static void opal_fadump_update_config(struct fw_dump *fadump_conf,
+ 				      const struct opal_fadump_mem_struct *fdm)
+ {
+-	pr_debug("Boot memory regions count: %d\n", fdm->region_cnt);
++	pr_err("Boot memory regions count: %d\n", fdm->region_cnt);
+ 
+ 	/*
+ 	 * The destination address of the first boot memory region is the
+ 	 * destination address of boot memory regions.
+ 	 */
+ 	fadump_conf->boot_mem_dest_addr = fdm->rgn[0].dest;
+-	pr_debug("Destination address of boot memory regions: %#016lx\n",
++	pr_err("Destination address of boot memory regions: %#016lx\n",
+ 		 fadump_conf->boot_mem_dest_addr);
+ 
+ 	fadump_conf->fadumphdr_addr = fdm->fadumphdr_addr;
+ 
+ 	/* Start address of preserve area (permanent reservation) */
+ 	fadump_conf->preserv_area_start = fadump_conf->boot_mem_dest_addr;
+-	pr_debug("Preserve area start address: 0x%lx\n",
++	pr_err("Preserve area start address: 0x%lx\n",
+ 		 fadump_conf->preserv_area_start);
+ }
+ 
+@@ -121,12 +121,12 @@ static void opal_fadump_get_config(struct fw_dump *fadump_conf,
+ 	fadump_conf->boot_memory_size = 0;
+ 
+ 	if (fdm->region_cnt)
+-		pr_debug("Boot memory regions:\n");
++		pr_err("Boot memory regions:\n");
+ 
+ 	for (i = 0; i < fdm->region_cnt; i++) {
+ 		base = fdm->rgn[i].src;
+ 		size = fdm->rgn[i].size;
+-		pr_debug("\t%d. base: 0x%lx, size: 0x%lx\n",
++		pr_err("\t%d. base: 0x%lx, size: 0x%lx\n",
+ 			 (i + 1), base, size);
+ 
+ 		fadump_conf->boot_mem_addr[i] = base;
+@@ -378,22 +378,22 @@ static int __init opal_fadump_build_cpu_notes(struct fw_dump *fadump_conf)
+ 	}
+ 	fadump_conf->cpu_notes_buf = __pa(note_buf);
+ 
+-	pr_debug("Allocated buffer for cpu notes of size %ld at %p\n",
++	pr_err("Allocated buffer for cpu notes of size %ld at %p\n",
+ 		 (num_cpus * sizeof(note_buf_t)), note_buf);
+ 
+ 	if (fadump_conf->fadumphdr_addr)
+ 		fdh = __va(fadump_conf->fadumphdr_addr);
+ 
+-	pr_debug("--------CPU State Data------------\n");
+-	pr_debug("NumCpus     : %u\n", num_cpus);
+-	pr_debug("\tOffset: %u, Entry size: %u, Cnt: %u\n",
++	pr_err("--------CPU State Data------------\n");
++	pr_err("NumCpus     : %u\n", num_cpus);
++	pr_err("\tOffset: %u, Entry size: %u, Cnt: %u\n",
+ 		 regs_offset, reg_esize, regs_cnt);
+ 
+ 	for (i = 0; i < num_cpus; i++, bufp += size_of_each_thread) {
+ 		thdr = (struct hdat_fadump_thread_hdr *)bufp;
+ 
+ 		thread_pir = be32_to_cpu(thdr->pir);
+-		pr_debug("%04d) PIR: 0x%x, core state: 0x%02x\n",
++		pr_err("%04d) PIR: 0x%x, core state: 0x%02x\n",
+ 			 (i + 1), thread_pir, thdr->core_state);
+ 
+ 		/*
+@@ -415,7 +415,7 @@ static int __init opal_fadump_build_cpu_notes(struct fw_dump *fadump_conf)
+ 		if (fdh && (fdh->crashing_cpu == thread_pir)) {
+ 			note_buf = fadump_regs_to_elf_notes(note_buf,
+ 							    &fdh->regs);
+-			pr_debug("Crashing CPU PIR: 0x%x - R1 : 0x%lx, NIP : 0x%lx\n",
++			pr_err("Crashing CPU PIR: 0x%x - R1 : 0x%lx, NIP : 0x%lx\n",
+ 				 fdh->crashing_cpu, fdh->regs.gpr[1],
+ 				 fdh->regs.nip);
+ 			continue;
+@@ -425,13 +425,13 @@ static int __init opal_fadump_build_cpu_notes(struct fw_dump *fadump_conf)
+ 				      reg_esize, true, &regs);
+ 
+ 		note_buf = fadump_regs_to_elf_notes(note_buf, &regs);
+-		pr_debug("CPU PIR: 0x%x - R1 : 0x%lx, NIP : 0x%lx\n",
++		pr_err("CPU PIR: 0x%x - R1 : 0x%lx, NIP : 0x%lx\n",
+ 			 thread_pir, regs.gpr[1], regs.nip);
+ 	}
+ 	final_note(note_buf);
+ 
+ 	if (fdh) {
+-		pr_debug("Updating elfcore header (%llx) with cpu notes\n",
++		pr_err("Updating elfcore header (%llx) with cpu notes\n",
+ 			 fdh->elfcorehdr_addr);
+ 		fadump_update_elfcore_header(fadump_conf,
+ 					     __va(fdh->elfcorehdr_addr));
+@@ -562,7 +562,7 @@ int __init opal_fadump_dt_scan(struct fw_dump *fadump_conf, ulong node)
+ 	 */
+ 	dn = of_get_flat_dt_subnode_by_name(node, "dump");
+ 	if (dn == -FDT_ERR_NOTFOUND) {
+-		pr_debug("FADump support is missing!\n");
++		pr_err("FADump support is missing!\n");
+ 		return 1;
+ 	}
+ 
+@@ -619,7 +619,7 @@ int __init opal_fadump_dt_scan(struct fw_dump *fadump_conf, ulong node)
+ 		}
+ 
+ 		addr = be64_to_cpu(addr);
+-		pr_debug("Kernel metadata addr: %llx\n", addr);
++		pr_err("Kernel metadata addr: %llx\n", addr);
+ 
+ 		opal_fdm_active = __va(addr);
+ 		r_opal_fdm_active = (void *)addr;
+@@ -642,7 +642,7 @@ int __init opal_fadump_dt_scan(struct fw_dump *fadump_conf, ulong node)
+ 		}
+ 
+ 		addr = be64_to_cpu(addr);
+-		pr_debug("CPU metadata addr: %llx\n", addr);
++		pr_err("CPU metadata addr: %llx\n", addr);
+ 
+ 		opal_cpu_metadata = __va(addr);
+ 		r_opal_cpu_metadata = (void *)addr;
+diff --git a/arch/powerpc/platforms/pseries/rtas-fadump.c b/arch/powerpc/platforms/pseries/rtas-fadump.c
+index 7c44bd4..c997f40 100644
+--- a/arch/powerpc/platforms/pseries/rtas-fadump.c
++++ b/arch/powerpc/platforms/pseries/rtas-fadump.c
+@@ -45,7 +45,7 @@ static void rtas_fadump_update_config(struct fw_dump *fadump_conf,
+ 	/* Start address of preserve area (permanent reservation) */
+ 	fadump_conf->preserv_area_start =
+ 		be64_to_cpu(fdm->cpu_state_data.destination_address);
+-	pr_debug("Preserve area start address: 0x%lx\n",
++	pr_err("Preserve area start address: 0x%lx\n",
+ 		 fadump_conf->preserv_area_start);
+ }
+ 
+@@ -345,13 +345,13 @@ static int __init rtas_fadump_build_cpu_notes(struct fw_dump *fadump_conf)
+ 		return -ENOENT;
+ 	}
+ 
+-	pr_debug("--------CPU State Data------------\n");
+-	pr_debug("Magic Number: %llx\n", be64_to_cpu(reg_header->magic_number));
+-	pr_debug("NumCpuOffset: %x\n", be32_to_cpu(reg_header->num_cpu_offset));
++	pr_err("--------CPU State Data------------\n");
++	pr_err("Magic Number: %llx\n", be64_to_cpu(reg_header->magic_number));
++	pr_err("NumCpuOffset: %x\n", be32_to_cpu(reg_header->num_cpu_offset));
+ 
+ 	vaddr += be32_to_cpu(reg_header->num_cpu_offset);
+ 	num_cpus = be32_to_cpu(*((__be32 *)(vaddr)));
+-	pr_debug("NumCpus     : %u\n", num_cpus);
++	pr_err("NumCpus     : %u\n", num_cpus);
+ 	vaddr += sizeof(u32);
+ 	reg_entry = (struct rtas_fadump_reg_entry *)vaddr;
+ 
+@@ -367,7 +367,7 @@ static int __init rtas_fadump_build_cpu_notes(struct fw_dump *fadump_conf)
+ 	}
+ 	fadump_conf->cpu_notes_buf = __pa(note_buf);
+ 
+-	pr_debug("Allocated buffer for cpu notes of size %ld at %p\n",
++	pr_err("Allocated buffer for cpu notes of size %ld at %p\n",
+ 			(num_cpus * sizeof(note_buf_t)), note_buf);
+ 
+ 	if (fadump_conf->fadumphdr_addr)
+@@ -387,7 +387,7 @@ static int __init rtas_fadump_build_cpu_notes(struct fw_dump *fadump_conf)
+ 			RTAS_FADUMP_SKIP_TO_NEXT_CPU(reg_entry);
+ 			continue;
+ 		}
+-		pr_debug("Reading register data for cpu %d...\n", cpu);
++		pr_err("Reading register data for cpu %d...\n", cpu);
+ 		if (fdh && fdh->crashing_cpu == cpu) {
+ 			regs = fdh->regs;
+ 			note_buf = fadump_regs_to_elf_notes(note_buf, &regs);
+@@ -401,7 +401,7 @@ static int __init rtas_fadump_build_cpu_notes(struct fw_dump *fadump_conf)
+ 	final_note(note_buf);
+ 
+ 	if (fdh) {
+-		pr_debug("Updating elfcore header (%llx) with cpu notes\n",
++		pr_err("Updating elfcore header (%llx) with cpu notes\n",
+ 			 fdh->elfcorehdr_addr);
+ 		fadump_update_elfcore_header(fadump_conf,
+ 					     __va(fdh->elfcorehdr_addr));
